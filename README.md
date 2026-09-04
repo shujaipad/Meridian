@@ -1,2 +1,2 @@
 # Meridian
-Break it trend spotting with fundamental overlay
+Break out trend spotting with fundamental overlay
