@@ -785,6 +785,16 @@ function fmtCr(v) {
 function fmtNum(v, d = 1) { return v == null || isNaN(v) ? "—" : v.toFixed(d); }
 function fmtPct(v, d = 1) { return v == null || isNaN(v) ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(d)}%`; }
 
+// Item labels are asset-class config, not literals, so a bare +"s" mispluralizes
+// four of the six in use — industry, commodity, currency, index. "indices" over
+// "indexes" to match the Global Indices tab.
+function pluralizeLower(word) {
+  const w = word.toLowerCase();
+  if (w === "index") return "indices";
+  if (/[^aeiou]y$/.test(w)) return `${w.slice(0, -1)}ies`;
+  return `${w}s`;
+}
+
 function FlagBadge({ flag }) {
   if (!flag) return <span style={{ color: T.textDim }}>—</span>;
   const map = {
@@ -1561,7 +1571,7 @@ function GoldenBreakoutScreen({ candidates, accent = T.gold, hasFundamentals = t
 
       {candidates.length === 0 ? (
         <div style={{ padding: 60, textAlign: "center", color: T.textDim }}>
-          No {itemLabel.toLowerCase()}s currently clear all five gates.
+          No {pluralizeLower(itemLabel)} currently clear all five gates.
         </div>
       ) : (
         <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "70vh" }}>
