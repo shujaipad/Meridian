@@ -1,0 +1,26 @@
+Symbol,Name,Unit
+GOLD,Gold,₹/10g
+SILVER,Silver,₹/kg
+CRUDEOIL,Crude Oil,₹/bbl
+NATURALGAS,Natural Gas,₹/mmBtu
+COPPER,Copper,₹/kg
+ALUMINIUM,Aluminium,₹/kg
+ZINC,Zinc,₹/kg
+NICKEL,Nickel,₹/kg
+LEAD,Lead,₹/kg
+COTTON,Cotton,₹/bale
+SUGAR,Sugar,₹/quintal
+WHEAT,Wheat,₹/quintal
+CORN,Corn (Maize),₹/quintal
+SOYBEAN,Soybean,₹/quintal
+COFFEE,Coffee,₹/quintal
+COCOA,Cocoa,$/tonne
+PLATINUM,Platinum,₹/10g
+PALLADIUM,Palladium,₹/10g
+RUBBER,Rubber,₹/quintal
+CPO,Crude Palm Oil,₹/10kg
+MENTHAOIL,Mentha Oil,₹/kg
+STEEL,Steel (Long),₹/tonne
+IRONORE,Iron Ore,$/tonne
+KAPAS,Kapas (Raw Cotton),₹/20kg
+GUARSEED,Guar Seed,₹/quintal
