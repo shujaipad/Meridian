@@ -1,0 +1,24 @@
+Symbol,Name,YahooTicker,Region
+SPX,S&P 500,^GSPC,USA
+NDX,Nasdaq 100,^NDX,USA
+RUT,Russell 2000,^RUT,USA
+DJI,Dow Jones,^DJI,USA
+NIFTY50,Nifty 50,^NSEI,India
+FTSE100,FTSE 100,^FTSE,UK
+DAX40,DAX 40,^GDAXI,Germany
+CAC40,CAC 40,^FCHI,France
+ESTX50,Euro Stoxx 50,^STOXX50E,Europe
+NIKKEI225,Nikkei 225,^N225,Japan
+HSI,Hang Seng,^HSI,Hong Kong
+SSEC,Shanghai Composite,000001.SS,China
+CSI300,CSI 300,000300.SS,China
+ASX200,ASX 200,^AXJO,Australia
+KOSPI,KOSPI,^KS11,South Korea
+TWII,Taiwan Weighted,^TWII,Taiwan
+STI,Straits Times,^STI,Singapore
+BOVESPA,Bovespa,^BVSP,Brazil
+IPCMEX,IPC Mexico,^MXX,Mexico
+TSX,TSX Composite,^GSPTSE,Canada
+IBEX35,IBEX 35,^IBEX,Spain
+FTSEMIB,FTSE MIB,FTSEMIB.MI,Italy
+AEX,AEX Index,^AEX,Netherlands

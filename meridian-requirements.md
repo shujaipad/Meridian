@@ -820,11 +820,26 @@ For quick reference; each item traces to a fuller explanation above.
    as snapshot tables, not append-only daily history** (now locked, §6.4) — that
    distinction was the single biggest swing factor and is why this is resolved rather
    than still open.
-2. **Real data sourcing for Commodities, Currencies, Global Indices, and Crypto** —
-   currently sample/synthetic data only; real universe lists for all four forthcoming
-   directly from the owner (2026-09-05), same delivery mechanism as the equities price
-   history. Sourcing mechanism otherwise unchanged: Yahoo Finance, per §3.6's
-   asset-class-agnostic coverage.
+2. ~~Real data sourcing for Commodities, Currencies, Global Indices, and Crypto~~
+   **Master universe lists delivered and verified (2026-09-05)** — 27 Commodities, 27
+   Currencies, 26 Crypto, 23 Global Indices (`meridian-{commodities,currencies,crypto,
+   indices}-master.csv`). Every ticker was checked directly against Yahoo Finance's
+   chart API before inclusion, not assumed from the owner's list as-given:
+   - **2 tickers corrected:** Hyperliquid (`HYPE-USD` matched an unrelated token;
+     corrected to `HYPE32196-USD`) and Toncoin (`GRAM-USD` is Yahoo's legacy/renamed
+     symbol; corrected to the live `TON11419-USD`). One evident typo also fixed
+     (`NEAR-US` → `NEAR-USD`).
+   - **5 commodities excluded — no valid Yahoo Finance ticker exists:** Coal (Newcastle
+     Futures), Nickel, Tin, Barley (all 404), Lead (resolves but returns no real quote
+     data). These are LME-only or niche-exchange instruments Yahoo's free tier simply
+     doesn't carry — not a data-quality bug, a real source-coverage gap.
+   - **2 indices excluded by explicit decision:** Nifty Midcap 150 and Topix have no
+     direct index-level Yahoo ticker, only ETF proxies (e.g. `HDFCMID150.NS`) — owner
+     chose to drop both rather than substitute a fund for an index.
+   - **Still open:** these are *master/instrument* lists only — real OHLCV price
+     history for all four asset classes is separate, not-yet-done work (§3.4/§7.3's
+     Yahoo Finance backfill, unchanged in mechanism, just not yet run against these
+     universes). The `-prices-sample.csv` files remain synthetic until that happens.
 3. **Golden Breakout thresholds for non-Equity asset classes and Sectoral are
    unvalidated.** The 5-gate model (§4.3) was backtested exclusively against equities.
    Commodities/Currencies/Indices/Crypto/Sectoral currently reuse the identical thresholds with an
@@ -857,9 +872,10 @@ be the authoritative list of what belongs in the GitHub repository.
 | Input | `meridian-company-master-742.csv` | Real Equities master data |
 | Input | `meridian-price-history-742.csv` | Real Equities price history (~67MB) |
 | Input | `meridian-fundamentals-742.csv` | Real Equities fundamentals |
-| Input | `meridian-commodities-master-sample.csv` + `-prices-sample.csv` | Sample data, Commodities |
-| Input | `meridian-indices-master-sample.csv` + `-prices-sample.csv` | Sample data, Global Indices |
-| Input | `meridian-crypto-master-sample.csv` + `-prices-sample.csv` | Sample data, Crypto |
+| Input | `meridian-commodities-master.csv` | Real, verified universe (27 instruments) — `-prices-sample.csv` remains synthetic, real price history not yet sourced |
+| Input | `meridian-currencies-master.csv` | Real, verified universe (27 instruments) — new asset class; no price file yet, synthetic or real |
+| Input | `meridian-indices-master.csv` | Real, verified universe (23 instruments) — `-prices-sample.csv` remains synthetic, real price history not yet sourced |
+| Input | `meridian-crypto-master.csv` | Real, verified universe (26 instruments) — `-prices-sample.csv` remains synthetic, real price history not yet sourced |
 | Output | `meridian.jsx` | The application |
 | Output | `meridian-sample.xlsx` | The parallel Excel workbook deliverable (§2.2) |
 | Output | `meridian-requirements.md` | This document (vision, methodology, locked architecture) |

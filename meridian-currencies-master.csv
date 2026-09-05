@@ -1,0 +1,28 @@
+Symbol,Name,YahooTicker
+USD,US Dollar Index,DX-Y.NYB
+EUR,Euro,EURUSD=X
+JPY,Japanese Yen,JPY=X
+GBP,Pound Sterling,GBPUSD=X
+CHF,Swiss Franc,CHF=X
+AUD,Australian Dollar,AUDUSD=X
+CAD,Canadian Dollar,CAD=X
+INR,Indian Rupee,INR=X
+KRW,South Korean Won,KRW=X
+SEK,Swedish Krona,SEK=X
+MXN,Mexican Peso,MXN=X
+NZD,New Zealand Dollar,NZDUSD=X
+NOK,Norwegian Krone,NOK=X
+TWD,New Taiwan Dollar,TWD=X
+BRL,Brazilian Real,BRL=X
+ZAR,South African Rand,ZAR=X
+PLN,Polish Zloty,PLN=X
+DKK,Danish Krone,DKK=X
+IDR,Indonesian Rupiah,IDR=X
+TRY,Turkish Lira,TRY=X
+THB,Thai Baht,THB=X
+ILS,Israeli New Shekel,ILS=X
+HUF,Hungarian Forint,HUF=X
+CZK,Czech Koruna,CZK=X
+CLP,Chilean Peso,CLP=X
+PHP,Philippine Peso,PHP=X
+COP,Colombian Peso,COP=X
