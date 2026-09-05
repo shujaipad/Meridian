@@ -726,7 +726,67 @@ For quick reference; each item traces to a fuller explanation above.
 
 ---
 
-## 10. Complete Current Source — `meridian.jsx`
+## 10. File Inventory — Inputs & Outputs
+
+A complete, verified accounting of every file associated with the project, checked
+directly against the actual workspace rather than reconstructed from memory — meant to
+be the authoritative list of what belongs in the GitHub repository.
+
+### 10.1 Current, relevant files (repository-ready)
+
+| Type | File | What it is |
+|---|---|---|
+| Input | `meridian-company-master-742.csv` | Real Equities master data |
+| Input | `meridian-price-history-742.csv` | Real Equities price history (~67MB) |
+| Input | `meridian-fundamentals-742.csv` | Real Equities fundamentals |
+| Input | `meridian-commodities-master-sample.csv` + `-prices-sample.csv` | Sample data, Commodities |
+| Input | `meridian-indices-master-sample.csv` + `-prices-sample.csv` | Sample data, Global Indices |
+| Input | `meridian-crypto-master-sample.csv` + `-prices-sample.csv` | Sample data, Crypto |
+| Output | `meridian.jsx` | The application |
+| Output | `meridian-sample.xlsx` | The parallel Excel workbook deliverable (§2.2) |
+| Output | `meridian-requirements.md` | This document (includes the embedded source, §11) |
+| Output | `meridian_backtest.py` | The consolidated, authoritative backtest script |
+
+**Status check (2026-09-05):** `meridian-price-history-742.csv` is listed above as
+repository-ready but is **not currently present in the GitHub repository** — confirmed
+by direct inspection, not assumed. None of the 8 split-part files (§10.3) are present
+either. This is the real Equities price history — the input every technical signal,
+the Golden Breakout gates, and `meridian_backtest.py` itself depend on — so until it (or
+an equivalent) is uploaded, the backtest script cannot be run against real data and
+`prices_daily` has nothing to be seeded from. Tracked as open, not yet resolved.
+
+### 10.2 Deliberately excluded — historical, not current
+
+Kept out of the repository-ready set on purpose, not by oversight. Listed here so a
+later reader doesn't wonder why an earlier-referenced file is missing, or mistake it
+for something still current:
+
+- **`bharat-screener.jsx` and `bharat-screener-sample.xlsx`** — the project's original
+  pre-rename files, from before the Golden Breakout redesign and multi-asset framework
+  (§2.1 notes the original "Bharat Screener" name). Superseded completely, not
+  incrementally, by `meridian.jsx` and `meridian-sample.xlsx`.
+- **`nifty50-company-master.csv` and the two `meridian-universe-isins-*.xlsx` files** —
+  early-stage universe-scoping artifacts from before the 742-stock Company Master
+  became the real, current input.
+- **`refresh_technicals.py`** — the original NSE bhavcopy daily-automation script. This
+  predates the later, locked decision to use Yahoo Finance for daily fetching (§3.6,
+  §7.3), and it was never tested against a live server from within this chat
+  environment (§2.3). Excluded specifically so it isn't mistaken for current guidance
+  when it no longer reflects the locked architecture.
+
+### 10.3 A real redundancy, resolved by context rather than by data difference
+
+The 8 split price-history files (`meridian-price-history-742-part1of8.csv` through
+`part8of8.csv`) contain the exact same underlying data as the single
+`meridian-price-history-742.csv` — they were created specifically as a workaround for a
+browser-based upload crash encountered while using the client-side artifact (§2.3).
+**Excluded from the repository set:** Claude Code reads files directly from the
+repository rather than through a browser upload flow, so the crash they were built to
+work around does not apply in that context, and the split files add no value there.
+
+---
+
+## 11. Complete Current Source — `meridian.jsx`
 
 This is the literal, complete, current source file — not a description of it. Per §5
 (this document's own stated purpose), the requirements above explain *why* every
