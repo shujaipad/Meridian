@@ -727,7 +727,7 @@ function computeBreadthSeries(stockList, closesById, lookbackDays = 500) {
 // flat, ranked list across the whole universe.
 const GOLDEN_BREAKOUT_PARAMS = {
   minSeparationPct: 3,   // 50DMA must be at least this far above 200DMA
-  freshnessMaxDays: 10,  // the golden-cross state must be this recent or fresher
+  freshnessMaxDays: 15,  // the golden-cross state must be this recent or fresher
 };
 
 function passesGoldenBreakout(stock, params = GOLDEN_BREAKOUT_PARAMS) {
@@ -1537,7 +1537,7 @@ function GoldenBreakoutScreen({ candidates, accent = T.gold, hasFundamentals = t
   return (
     <div style={{ padding: "16px 24px 40px" }} onClick={() => setOpenFilterKey(null)}>
       <div style={{ fontSize: 12, color: T.textDim, marginBottom: 16, lineHeight: 1.6 }}>
-        <b style={{ color: T.text }}>{candidates.length} candidate{candidates.length === 1 ? "" : "s"}</b> — Golden Cross model, five backtested gates: price above 50DMA above 200DMA, 200DMA rising, separation ≥3%, cross freshness ≤10 days, price above 8DMA.
+        <b style={{ color: T.text }}>{candidates.length} candidate{candidates.length === 1 ? "" : "s"}</b> — Golden Cross model, five backtested gates: price above 50DMA above 200DMA, 200DMA rising, separation ≥3%, cross freshness ≤15 days, price above 8DMA.
         {hasFundamentals ? " No RS, no fundamentals, no volatility filter, no bucketing — each was tested against 5 years of real equity price history and either didn't earn its place or actively hurt results." : " Same five gates as the equities model — thresholds were validated on equities specifically and haven't yet been separately backtested for this asset class."} Sorted by separation width, then freshness.{hasFundamentals ? " Fund Score and Volume Breakout are shown for your own reference — neither gates nor ranks the list." : " Volume Breakout is shown for your own reference — it doesn't gate or rank the list."}
       </div>
 
@@ -1602,7 +1602,7 @@ function GoldenBreakoutScreen({ candidates, accent = T.gold, hasFundamentals = t
                                 <div>Golden Cross (50DMA &gt; 200DMA): <b style={{ color: T.gain }}>Yes</b>, price above 50DMA: <b style={{ color: T.gain }}>Yes</b></div>
                                 <div>200DMA rising: <b style={{ color: T.gain }}>Yes</b> ({fmtPct(t?.ma200SlopePct, 2)})</div>
                                 <div>Separation: <b style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{fmtPct(t?.separationPct, 2)}</b> (min 3%)</div>
-                                <div>Freshness: <b style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{t?.goldenCrossStreak?.streak}d</b> (max 10d)</div>
+                                <div>Freshness: <b style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{t?.goldenCrossStreak?.streak}d</b> (max 15d)</div>
                                 <div>Price above 8DMA: <b style={{ color: T.gain }}>Yes</b> (MA8: ₹{fmtNum(t?.mas?.[8], 2)})</div>
                               </div>
                             </div>
