@@ -20,7 +20,7 @@
 
 create table universe (
   id                bigserial primary key,
-  asset_class       text not null check (asset_class in ('equity', 'commodity', 'index', 'crypto')),
+  asset_class       text not null check (asset_class in ('equity', 'commodity', 'currency', 'index', 'crypto')),
   identifier_type   text not null check (identifier_type in ('isin', 'yahoo_ticker')),
   identifier        text not null,
   symbol            text not null,

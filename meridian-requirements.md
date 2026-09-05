@@ -12,7 +12,7 @@ transition starts with full context rather than from zero.
 ## 1. Product Vision
 
 Meridian is a fundamental + technical screening and idea-generation tool for the Indian
-equity market (plus Commodities, Global Indices, and Crypto), built around one core
+equity market (plus Commodities, Currencies, Global Indices, and Crypto), built around one core
 belief: **nothing ships without evidence.** Every scoring model, threshold, and signal in
 this document was either backtested against 5 years of real price history or explicitly
 rejected because it didn't hold up — including cases where the evidence contradicted the
@@ -34,19 +34,21 @@ data is user-uploaded each session, nothing persists reliably at scale (see §6.
 and there is no automation.
 
 ### 2.1 Structure
-Four top-level asset-class tabs, each color-accented for quick visual orientation:
+**Five** top-level asset-class tabs (Currencies added 2026-09-05 — originally four), each
+color-accented for quick visual orientation:
 
 | Asset class | Sub-tabs | Data status |
 |---|---|---|
-| **Equities** | Stocks, Golden Breakout, Sectoral, Sectoral Breakout, Market Breadth | Real data: 742 of ~1,977 qualifying stocks (full universe re-sourcing in progress) |
-| **Commodities** | Base data, Golden Breakout | Sample/synthetic data (25 instruments); real sourcing not yet done |
-| **Global Indices** | Base data, Golden Breakout | Sample/synthetic data (25 instruments); real sourcing not yet done |
-| **Crypto** | Base data, Golden Breakout | Sample/synthetic data (25 instruments); real sourcing not yet done |
+| **Equities** | Stocks, Golden Breakout, Sectoral, Sectoral Breakout, Market Breadth | Real data: 742 of ~1,977 qualifying stocks; full-universe quarterly upload forthcoming (§3.1) |
+| **Commodities** | Base data, Golden Breakout | Real universe forthcoming (§3.2) |
+| **Currencies** | Base data, Golden Breakout | Real universe forthcoming (§3.2) — new asset class, accent TBD (proposed: teal) |
+| **Global Indices** | Base data, Golden Breakout | Real universe forthcoming (§3.2) |
+| **Crypto** | Base data, Golden Breakout | Real universe forthcoming (§3.2) |
 
 Equities uses a specialized, fully-featured screen (watchlists, universe management,
-alerts, fundamentals). Commodities/Indices/Crypto share one **generic, reusable**
-component pair (`GenericAssetScreen` for base data, `GenericGoldenBreakoutScreen` for
-signals), driven by a config object — not three copy-pasted screens. This was a
+alerts, fundamentals). Commodities/Currencies/Indices/Crypto share one **generic,
+reusable** component pair (`GenericAssetScreen` for base data, `GenericGoldenBreakoutScreen`
+for signals), driven by a config object — not four copy-pasted screens. This was a
 deliberate architectural choice made once the shape of "N similar asset classes" became
 concrete, specifically to avoid the maintenance burden of near-duplicate screens
 drifting apart over time.
@@ -157,14 +159,16 @@ oversight to silently carry forward.
 - **Audit trail:** every quarterly addition/removal is logged (`universe_change_log`,
   §6.4) so "why is this stock gone" has a permanent answer.
 
-### 3.2 Commodities / Global Indices / Crypto
-- **Definition:** small, static, manually-curated lists (~25–30 instruments each).
+### 3.2 Commodities / Currencies / Global Indices / Crypto
+- **Definition:** small, static, manually-curated lists (~25–30 instruments each),
+  identified by Yahoo ticker (not ISIN — see §6.4). **Currencies added 2026-09-05** as a
+  fifth asset class, same shape as the other three.
 - **Maintenance model:** **not** on the quarterly automated cycle. Changes are manual,
-  on-demand actions through the same maintenance screen used for equities — adding an
-  instrument triggers a scoped one-time historical backfill (reusing the same backfill
-  mechanism as §3.3); removing one triggers the same permanent-erase policy as equities.
-  One underlying mechanism, two different triggers (scheduled vs. manual) — not two
-  separate systems.
+  on-demand actions through the same standalone admin tool used for the equities universe
+  upload (§3.1, §6.4) — adding an instrument triggers a scoped one-time historical
+  backfill (reusing the same backfill mechanism as §3.3); removing one triggers the same
+  permanent-erase policy as equities. One underlying mechanism, two different triggers
+  (scheduled vs. manual) — not two separate systems.
 
 ### 3.3 Sectoral (Industry Pools)
 - **Not a separate data source.** A synthetic, equal-weighted price index built entirely
@@ -503,7 +507,7 @@ Full DDL and RLS policies: `supabase-schema.sql`.
 
 **Raw data tables** (one set per asset class where applicable):
 - `universe` — asset class, identifier (ISIN for equities, Yahoo ticker for
-  Commodities/Indices/Crypto — the identifier column is not uniform across asset
+  Commodities/Currencies/Indices/Crypto — the identifier column is not uniform across asset
   classes, per §3.2), Symbol, Name, Sector/IndustryGroup, MarketCap, status,
   added/removed dates
 - `prices_daily` — adjusted OHLCV time series
@@ -653,6 +657,52 @@ session. See §6.4 for the resulting maintenance-screen write-path gap this surf
   data (avoiding manual CSV export/ETL) — a separate, occasional workflow alongside the
   production app, not inside it.
 
+### 6.8 Tooling & Infrastructure (locked, 2026-09-05)
+
+**Paid, recurring costs — the only two:**
+- **DigitalOcean VPS**, ~$5–6/month — hosts the Node.js + Python cron pipeline (§6.3,
+  §6.5). Requires a payment method on signup (unlike everything else on this list).
+- **Domain name**, ~$10–15/year, optional — a custom URL for the frontend instead of the
+  free Vercel subdomain. Forthcoming from the owner; DNS configuration (Vercel + Resend
+  sending records) happens once it's provided.
+
+**Free-tier accounts (no cost expected at this scale):**
+- **Supabase** — Postgres database + Auth (§6.4–§6.6).
+- **Vercel** — frontend hosting (resolved §9 item 6). Chosen over Netlify/Cloudflare
+  Pages for the cleanest fit with a Vite-based React build and GitHub auto-deploy on
+  push.
+- **PostHog** — usage analytics tied to authenticated identity (§6.6).
+- **Resend** — transactional/notification email (§6.5's "email" was never assigned a
+  provider until now). Free tier (3,000/month) comfortably covers quarterly
+  universe-review prompts, annual fundamentals-complete notices, and pipeline failure
+  alerts. Full sending capability (a verified domain, not the default test domain)
+  depends on the domain name above.
+
+**Free tooling (local machine + the VPS):**
+- Node.js + npm/pnpm — pipeline compute and the frontend build.
+- Python 3 + pip (`yfinance`, `pandas`) — the Yahoo Finance fetch scripts (§7). The
+  pipeline is genuinely two-language on one VPS (Python fetch → Node compute), not a new
+  decision, just a real fact about what needs installing.
+- Supabase CLI — local Postgres for development, run against before touching production
+  data.
+- **Vitest** — unit tests for the ported compute functions (point 10 of the earlier
+  review; deferred to build phase, not started yet). Chosen over Jest for its native fit
+  with a Vite-based frontend build; a pure implementation detail with no cost or
+  user-facing effect, not something requiring a decision.
+- `exceljs` or `xlsx` (npm) — the admin tool's Excel parsing (§3.1, §6.4).
+- pm2 (optional) — process management for the VPS's cron jobs.
+- GitHub Actions (optional, free tier) — CI, running tests on push.
+- UptimeRobot (optional, free tier) — external heartbeat monitoring of the VPS, catching
+  "the whole server is down" in a way `fetch_job_log` (which lives *on* that server)
+  cannot.
+
+**Account creation is the owner's own action, not something Claude Code can do on their
+behalf** — Supabase, Vercel, DigitalOcean, PostHog, and Resend all tie account creation
+to a real identity (and DigitalOcean to a real payment method), which an AI agent cannot
+supply. Once accounts exist and credentials (API keys, connection strings) are shared as
+environment variables, all subsequent configuration, schema deployment, and code work
+is Claude Code's to do.
+
 ---
 
 ## 7. Data Sourcing Scripts — Evaluation & Reuse Plan
@@ -717,7 +767,7 @@ For quick reference; each item traces to a fuller explanation above.
 
 - [x] Universe: user-defined ISINs, quarterly review, corporate-action-adjust-or-exclude
       gap policy, permanent hard delete on removal
-- [x] Commodities/Indices/Crypto: static lists, manual on-demand maintenance
+- [x] Commodities/Currencies/Indices/Crypto: static lists, manual on-demand maintenance
 - [x] Sectoral: derived compute on `IndustryGroup` (29-category field), not separately
       maintained
 - [x] Daily price job: incremental + 60-day corporate-action reconciliation window
@@ -746,6 +796,14 @@ For quick reference; each item traces to a fuller explanation above.
       explicit active-session invalidation, handled manually via the Supabase
       dashboard at current scale; historical PostHog data is retained, not purged, on
       revocation — deliberately kept for future feature-development value
+- [x] Asset classes: five (Equities, Commodities, Currencies, Global Indices, Crypto) —
+      Currencies added 2026-09-05
+- [x] Universe maintenance: separate standalone admin tool (§6.4), not a Meridian
+      feature, never deployed to invited users; minimum 200 trading days of history for
+      universe inclusion (§3.1), IPOs/short-history scrips excluded outright
+- [x] Frontend hosting: Vercel, free tier
+- [x] Notification email provider: Resend, free tier
+- [x] Full tooling & infrastructure list: §6.8
 
 ---
 
@@ -762,12 +820,14 @@ For quick reference; each item traces to a fuller explanation above.
    as snapshot tables, not append-only daily history** (now locked, §6.4) — that
    distinction was the single biggest swing factor and is why this is resolved rather
    than still open.
-2. **Real data sourcing for Commodities, Global Indices, and Crypto** — currently
-   sample/synthetic data only; real sourcing plan (also via Yahoo Finance, per §3.6's
-   asset-class-agnostic coverage) not yet scoped in detail.
+2. **Real data sourcing for Commodities, Currencies, Global Indices, and Crypto** —
+   currently sample/synthetic data only; real universe lists for all four forthcoming
+   directly from the owner (2026-09-05), same delivery mechanism as the equities price
+   history. Sourcing mechanism otherwise unchanged: Yahoo Finance, per §3.6's
+   asset-class-agnostic coverage.
 3. **Golden Breakout thresholds for non-Equity asset classes and Sectoral are
    unvalidated.** The 5-gate model (§4.3) was backtested exclusively against equities.
-   Commodities/Indices/Crypto/Sectoral currently reuse the identical thresholds with an
+   Commodities/Currencies/Indices/Crypto/Sectoral currently reuse the identical thresholds with an
    explicit in-app disclaimer that they haven't been separately tested — not a
    confirmed-safe assumption.
 4. **Timing of the Claude Code migration** — deliberately deferred ("closer to
@@ -775,12 +835,9 @@ For quick reference; each item traces to a fuller explanation above.
    that transition low-friction whenever it happens, not to force the timing.
 5. **Whether a genuine, non-mirrored bearish/short signal gets built eventually** —
    shelved, not abandoned (§4.3.2).
-6. **Where the Meridian frontend itself gets served from in production.** The
-   DigitalOcean VPS (§6.5) was scoped specifically for the cron pipeline, not
-   necessarily for hosting the web app itself — a separate static host (Vercel,
-   Netlify, Cloudflare Pages, often free at this scale) serving the React frontend,
-   which then talks to Supabase directly, is a common, low-cost pattern, but this
-   hasn't been explicitly decided.
+6. ~~Where the Meridian frontend itself gets served from in production.~~ **Resolved
+   (2026-09-05): Vercel**, free tier. The DigitalOcean VPS (§6.5) stays scoped to the
+   cron pipeline only. Full tooling list: §6.8.
 7. **PostHog event instrumentation is not yet scoped.** Which specific actions get
    tracked (which tabs, which interactions) beyond the automatic visitor/time-on-site
    metrics has not been defined — a real, small design task, not just a config setting.
