@@ -754,19 +754,28 @@ GitHub's web uploader, which caps well below this file's size). Verified directl
 distinct ISINs matching the Company Master, no duplicate (ISIN, Date) rows, no malformed
 or null fields, date range 2021-08-09 to 2026-08-07 (~5 years).
 
-**A real finding surfaced during that verification, not yet resolved:** row counts per
-ISIN range from 159 to 1,239 trading days (a full 5-year span is ~1,250). 142 of the 742
-stocks (~19%) have fewer than 1,000 days of history; 82 have fewer than 500. This is in
-tension with §3.1's locked policy — *"a stock with genuinely unavailable history for the
-full look-back period is excluded from the universe entirely, not carried with a partial
-series"* — which this dataset does not appear to follow for a meaningful slice of the
-universe (most plausibly, stocks that listed partway through the Aug 2021–Aug 2026
-window). Not a data-corruption issue — `meridian.jsx`'s compute functions already null
-out signals that need more history than exists (e.g. no 200DMA before day 200) — but it
-means the current real dataset doesn't match the stated exclusion policy. Whether this is
-accepted as historical reality (with the policy enforced going forward once the real
-quarterly ingestion pipeline exists) or corrected retroactively is an open decision, not
-yet made.
+**A finding surfaced during that verification, corrected after clarification:** row
+counts per ISIN range from 159 to 1,239 trading days (a full 5-year span is ~1,250). An
+initial read flagged this against the *5-year backtest depth* and looked like a large
+policy violation — but the 5-year depth is a backtest-sample-size need, not what the
+*live* signals require. The longest lookback any production signal actually needs is
+~252 trading days (RS Rating's 12-month window; the 200DMA itself needs 200). Measured
+against that, the real bar, the picture is materially smaller:
+
+- **707 of 742 stocks (95.3%)** have ≥252 days — fully fine for every live signal.
+- **16 stocks (2.2%)** have 200–251 days — enough for the 200DMA-based Golden Breakout
+  gates, just short of full RS Rating depth.
+- **19 stocks (2.6%)** have <200 days — genuinely can't support live signals yet. Checked
+  against the Company Master by name: these are all identifiable recent IPOs (e.g. ICICI
+  Prudential AMC, Meesho, Groww, Lenskart, Pine Labs, PhysicsWallah, Wakefit, Capillary
+  Technologies) — exactly the "recent listings without enough trading history yet" case
+  §3.1 already anticipated, not a data-quality problem.
+
+**Still an open decision:** whether those 19 should be hard-excluded from the universe
+now per §3.1's literal wording ("excluded entirely, not carried with a partial series"),
+or left in with their signals naturally null until they age past 200 days — both are
+defensible once "look-back period" is understood as the ~200–252-day production
+requirement rather than the 5-year backtest window.
 
 ### 10.2 Deliberately excluded — historical, not current
 
