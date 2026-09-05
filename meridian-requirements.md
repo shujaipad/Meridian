@@ -132,9 +132,9 @@ oversight to silently carry forward.
 ## 3. Data & Universe Requirements
 
 ### 3.1 Equities universe
-- **Definition:** user-defined, by ISIN, via a maintenance screen kept separate from the
-  main analytics UI (clean-visuals, filter-driven experience is not to be cluttered with
-  data-maintenance concerns).
+- **Definition:** user-defined, by ISIN, via a quarterly Excel upload processed by a
+  **separate, standalone admin tool — not a Meridian feature, not part of the user-facing
+  app at all** (locked 2026-09-05; see §6.4 for why and for the tool's own shape).
 - **Review cadence:** quarterly, on calendar-quarter-end dates — Mar 31 / Jun 30 / Sep 30
   / Dec 31 — aligned with the original >₹500 Cr market-cap threshold convention.
 - **Gap / data-completeness policy (locked):**
@@ -143,6 +143,11 @@ oversight to silently carry forward.
   - A stock with **genuinely unavailable history for the full look-back period**
     (overwhelmingly: recent listings without enough trading history yet) is **excluded
     from the universe entirely**, not carried with a partial series.
+  - **Numeric threshold locked (2026-09-05):** minimum **200 trading days** of history
+    required for universe inclusion — matching the actual production requirement (the
+    200DMA itself needs 200 days; see the §9 sizing/lookback discussion). Any scrip with
+    less — IPOs, above all — is excluded outright, not carried with nulled signals until
+    it ages in. Resolves the 19-stock case surfaced in §10.1: those are excluded.
   - **Accepted tradeoff:** this reduces breadth — promising recent listings will not
     appear in the universe until they've accumulated sufficient history. This was
     explicitly accepted, not an oversight.
@@ -533,16 +538,18 @@ history on every run, not something needing their own persisted history:
   (§6.6). The one table where the frontend writes directly (owner-only RLS); every
   other table is written only by the service-role pipeline.
 
-**Open gap surfaced while designing RLS (§6.6): no write path exists for the
-maintenance screen.** The quarterly Excel universe upload (§3.1) and the "Add Security"
-action (§3.2) both require writing to `universe` (and triggering a backfill into
-`prices_daily`) — but the RLS design below deliberately grants `authenticated` no write
-access to either table, only the service-role pipeline can write. This means those
-maintenance actions **cannot run through the public Meridian frontend as currently
-scoped** — they need either a separate admin-only tool using the service-role key
-directly, or a server-side function (Supabase Edge Function) that authenticates
-specifically as the admin and never exposes the service-role key to the browser. Not
-yet decided which.
+**Admin write path (locked, 2026-09-05): a separate, standalone admin tool.** The
+quarterly Excel universe upload (§3.1) and the "Add Security" action (§3.2) run through
+their own tool entirely — not a screen inside Meridian, not part of the user-facing app
+or its build, and never deployed to the ~100 invited users. It uses the service-role key
+directly and is not gated by Supabase Auth/RLS at all (the RLS design above grants
+`authenticated` no write access anywhere except `user_consent`, by design — this tool
+doesn't operate as an `authenticated` client). Default shape, pending confirmation: a
+local Node.js CLI script run by the owner, reading the quarterly Excel file (or a ticker
+argument for Add Security), applying the §3.1 inclusion policy (≥200 trading days of
+history, or excluded outright), and upserting into `universe` plus triggering the scoped
+backfill into `prices_daily` — no separate hosting or additional ops burden, consistent
+with the project's cost/ops priorities throughout. Not yet built.
 
 ### 6.5 Hosting & notifications (locked)
 - **Database:** Supabase (managed Postgres), free tier. Verified against current
@@ -825,11 +832,10 @@ against that, the real bar, the picture is materially smaller:
   Technologies) — exactly the "recent listings without enough trading history yet" case
   §3.1 already anticipated, not a data-quality problem.
 
-**Still an open decision:** whether those 19 should be hard-excluded from the universe
-now per §3.1's literal wording ("excluded entirely, not carried with a partial series"),
-or left in with their signals naturally null until they age past 200 days — both are
-defensible once "look-back period" is understood as the ~200–252-day production
-requirement rather than the 5-year backtest window.
+**Resolved (2026-09-05):** hard-excluded, per §3.1's now-explicit 200-day threshold —
+IPOs and any scrip with short history are excluded outright, not carried with nulled
+signals. These 19 are excluded from the universe until they individually cross 200
+trading days of real history.
 
 ### 10.2 Deliberately excluded — historical, not current
 
