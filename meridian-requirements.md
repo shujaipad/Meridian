@@ -484,22 +484,41 @@ Fetch (Yahoo Finance)
 ```
 The same chain runs nightly (incremental) and quarterly (full universe, post-review).
 
+**Atomicity (locked, 2026-09-05):** the compute step writes into `_staging` copies of
+every output table, then a single Postgres transaction renames the live tables to `_old`,
+renames `_staging` into their place, and drops `_old` — across all affected tables
+together, not one at a time. If compute fails partway, the swap simply never runs and the
+previous night's data stays live and consistent. This is what makes it safe for
+`technicals_daily`/`sectoral_technicals_daily` to be wholesale-replaced snapshots (§6.4)
+rather than append-only history — readers never see a half-updated table.
+
 ### 6.4 Database schema (locked)
 
+Full DDL and RLS policies: `supabase-schema.sql`.
+
 **Raw data tables** (one set per asset class where applicable):
-- `universe` — ISIN/Symbol, Name, Sector/IndustryGroup, MarketCap, status,
+- `universe` — asset class, identifier (ISIN for equities, Yahoo ticker for
+  Commodities/Indices/Crypto — the identifier column is not uniform across asset
+  classes, per §3.2), Symbol, Name, Sector/IndustryGroup, MarketCap, status,
   added/removed dates
 - `prices_daily` — adjusted OHLCV time series
 - `fundamentals_annual` — Equities only
 
 **Computed output tables** (refreshed by the pipeline; read-only from Meridian's
-perspective):
+perspective). **`technicals_daily` and `sectoral_technicals_daily` are SNAPSHOT
+tables — one row per instrument, replaced wholesale each run, not a growing daily
+history** (locked 2026-09-05; see the storage-sizing note in §9 for why this distinction
+matters). The frontend has no requirement to chart historical technicals as a time
+series — streaks and bands are scalars recomputed fresh from `prices_daily`'s real
+history on every run, not something needing their own persisted history:
 - `technicals_daily` — CMP, MAs, RSI, S/M signals + streaks, RS Rating, Volume
   Breakout %, 200DMA slope, Golden Cross state/streak/separation
 - `fundamentals_scored` — Composite Score, Tier, full per-metric detail
 - `golden_breakout_candidates` — today's qualifying list, precomputed
 - `market_breadth_daily` — the breadth series, precomputed once (not recomputed per
-  session)
+  session). This one **is** a genuine time series (one row per trading day, whole-market,
+  not per-stock) — it stays small regardless, so the snapshot-vs-history distinction
+  above doesn't apply to it.
 - `sectoral_technicals_daily` — same shape as `technicals_daily`, keyed by
   IndustryGroup
 
@@ -508,6 +527,22 @@ perspective):
   notification system (§6.5) and closes the "silent failure" gap identified during
   Python script review (§7)
 - `universe_change_log` — audit trail of quarterly additions/removals (§3.1)
+
+**User consent:**
+- `user_consent` — one row per user, backing the mandatory tracking-disclosure gate
+  (§6.6). The one table where the frontend writes directly (owner-only RLS); every
+  other table is written only by the service-role pipeline.
+
+**Open gap surfaced while designing RLS (§6.6): no write path exists for the
+maintenance screen.** The quarterly Excel universe upload (§3.1) and the "Add Security"
+action (§3.2) both require writing to `universe` (and triggering a backfill into
+`prices_daily`) — but the RLS design below deliberately grants `authenticated` no write
+access to either table, only the service-role pipeline can write. This means those
+maintenance actions **cannot run through the public Meridian frontend as currently
+scoped** — they need either a separate admin-only tool using the service-role key
+directly, or a server-side function (Supabase Edge Function) that authenticates
+specifically as the admin and never exposes the service-role key to the browser. Not
+yet decided which.
 
 ### 6.5 Hosting & notifications (locked)
 - **Database:** Supabase (managed Postgres), free tier. Verified against current
@@ -524,6 +559,18 @@ perspective):
 **Meridian is not public.** Nothing in the architecture above includes access control by
 default — left as-is, a thin frontend querying Supabase directly would be open to
 anyone with the URL. This was explicitly identified and closed, not an oversight.
+
+**RLS policies (locked, 2026-09-05):** full design in `supabase-schema.sql`. Default-deny
+on every table (RLS enabled everywhere); `authenticated` gets read-only `SELECT` on the
+tables Meridian's UI displays (`universe`, `prices_daily`, `technicals_daily`,
+`sectoral_technicals_daily`, `fundamentals_scored`, `golden_breakout_candidates`,
+`market_breadth_daily`); `fundamentals_annual`, `fetch_job_log`, and
+`universe_change_log` get no policy at all — locked to the service-role pipeline only,
+since the frontend never displays raw fundamentals or operational logs directly.
+`user_consent` is the one exception with owner-scoped read/write (`auth.uid() = user_id`)
+for the tracking-disclosure gate below. Table-level `GRANT`s are also restricted to
+`authenticated` (never `anon`), so both API-layer and RLS-layer checks require a real
+session. See §6.4 for the resulting maintenance-screen write-path gap this surfaced.
 
 - **Access model:** invite-only, up to **100 registered users** — not open
   self-registration, not a single shared passcode. Accounts are created/invited
@@ -697,10 +744,17 @@ For quick reference; each item traces to a fuller explanation above.
 
 ## 9. Open Items — Not Yet Resolved
 
-1. **Precise Supabase storage-footprint calculation.** The 500MB free-tier ceiling has
-   not yet been checked against the actual expected size of a properly-normalized
-   relational schema (expected to be meaningfully smaller than the raw CSV/JSON
-   footprint, but not yet calculated precisely).
+1. ~~Precise Supabase storage-footprint calculation.~~ **Resolved (2026-09-05), against
+   real data.** `prices_daily` dominates the footprint by a wide margin (fundamentals and
+   universe tables are trivial even at full scale). Using the real 742-stock price file
+   (807,339 rows, 67.4MB as CSV) as a baseline: a normalized table (surrogate `stock_id`
+   instead of repeating the ISIN text, `numeric`/`date` types instead of full-precision
+   text floats) plus its index lands around 60–70MB at today's partial universe, scaling
+   to **roughly 150–200MB at the full ~1,800–2,000-stock target** — comfortably under the
+   500MB free tier, **provided `technicals_daily`/`sectoral_technicals_daily` are built
+   as snapshot tables, not append-only daily history** (now locked, §6.4) — that
+   distinction was the single biggest swing factor and is why this is resolved rather
+   than still open.
 2. **Real data sourcing for Commodities, Global Indices, and Crypto** — currently
    sample/synthetic data only; real sourcing plan (also via Yahoo Finance, per §3.6's
    asset-class-agnostic coverage) not yet scoped in detail.
