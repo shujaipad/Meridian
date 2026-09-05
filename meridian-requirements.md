@@ -747,13 +747,26 @@ be the authoritative list of what belongs in the GitHub repository.
 | Output | `meridian-requirements.md` | This document (includes the embedded source, §11) |
 | Output | `meridian_backtest.py` | The consolidated, authoritative backtest script |
 
-**Status check (2026-09-05):** `meridian-price-history-742.csv` is listed above as
-repository-ready but is **not currently present in the GitHub repository** — confirmed
-by direct inspection, not assumed. None of the 8 split-part files (§10.3) are present
-either. This is the real Equities price history — the input every technical signal,
-the Golden Breakout gates, and `meridian_backtest.py` itself depend on — so until it (or
-an equivalent) is uploaded, the backtest script cannot be run against real data and
-`prices_daily` has nothing to be seeded from. Tracked as open, not yet resolved.
+**Status check (2026-09-05):** `meridian-price-history-742.csv` is now present in the
+repository (67.4MB, delivered compressed and reconstituted directly rather than through
+GitHub's web uploader, which caps well below this file's size). Verified directly:
+`ISIN,Date,High,Low,Close,Volume` schema matching `meridian_backtest.py`'s loader, 742
+distinct ISINs matching the Company Master, no duplicate (ISIN, Date) rows, no malformed
+or null fields, date range 2021-08-09 to 2026-08-07 (~5 years).
+
+**A real finding surfaced during that verification, not yet resolved:** row counts per
+ISIN range from 159 to 1,239 trading days (a full 5-year span is ~1,250). 142 of the 742
+stocks (~19%) have fewer than 1,000 days of history; 82 have fewer than 500. This is in
+tension with §3.1's locked policy — *"a stock with genuinely unavailable history for the
+full look-back period is excluded from the universe entirely, not carried with a partial
+series"* — which this dataset does not appear to follow for a meaningful slice of the
+universe (most plausibly, stocks that listed partway through the Aug 2021–Aug 2026
+window). Not a data-corruption issue — `meridian.jsx`'s compute functions already null
+out signals that need more history than exists (e.g. no 200DMA before day 200) — but it
+means the current real dataset doesn't match the stated exclusion policy. Whether this is
+accepted as historical reality (with the policy enforced going forward once the real
+quarterly ingestion pipeline exists) or corrected retroactively is an open decision, not
+yet made.
 
 ### 10.2 Deliberately excluded — historical, not current
 
