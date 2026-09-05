@@ -695,6 +695,10 @@ session. See §6.4 for the resulting maintenance-screen write-path gap this surf
 - UptimeRobot (optional, free tier) — external heartbeat monitoring of the VPS, catching
   "the whole server is down" in a way `fetch_job_log` (which lives *on* that server)
   cannot.
+- `preview/` — a local Vite + Playwright harness in this repository that runs
+  `meridian.jsx` in a real browser against the real data files, so a change can be
+  eyeballed and screenshotted rather than reasoned about. Dev tooling only; nothing
+  here ships. See `preview/README.md`.
 
 **Account creation is the owner's own action, not something Claude Code can do on their
 behalf** — Supabase, Vercel, DigitalOcean, PostHog, and Resend all tie account creation
@@ -880,6 +884,7 @@ be the authoritative list of what belongs in the GitHub repository.
 | Output | `meridian-sample.xlsx` | The parallel Excel workbook deliverable (§2.2) |
 | Output | `meridian-requirements.md` | This document (vision, methodology, locked architecture) |
 | Output | `meridian_backtest.py` | The consolidated, authoritative backtest script |
+| Tooling | `preview/` | Local dev harness — runs `meridian.jsx` in a real browser against the real data files, for eyeballing changes and screenshotting every screen. Not part of the production build; see `preview/README.md` |
 
 **Status check (2026-09-05):** `meridian-price-history-742.csv` is now present in the
 repository (67.4MB, delivered compressed and reconstituted directly rather than through

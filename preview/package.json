@@ -1,0 +1,24 @@
+{
+  "name": "meridian-preview",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Local dev harness for eyeballing meridian.jsx against real data. Not part of the production build.",
+  "scripts": {
+    "trim": "node trim-prices.mjs",
+    "dev": "vite",
+    "capture": "node capture.mjs"
+  },
+  "dependencies": {
+    "lucide-react": "^0.548.0",
+    "papaparse": "^5.5.3",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "recharts": "^3.2.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.4",
+    "playwright": "^1.57.0",
+    "vite": "^8.2.2"
+  }
+}
