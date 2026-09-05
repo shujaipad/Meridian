@@ -119,6 +119,11 @@ const ASSET_CLASSES = {
     storagePrefix: "screener-crypto", extraMasterFields: [],
     sampleMaster: [], samplePrices: [],
   },
+  currencies: {
+    key: "currencies", label: "Currencies", labelSingular: "currency", accent: "#2DB9A3",
+    storagePrefix: "screener-currencies", extraMasterFields: [],
+    sampleMaster: [], samplePrices: [],
+  },
 };
 
 // ---------- Sectoral: synthetic equal-weighted price index per IndustryGroup ----------
@@ -1797,6 +1802,7 @@ export default function App() {
   const [commoditiesSubTab, setCommoditiesSubTab] = useState("base");
   const [indicesSubTab, setIndicesSubTab] = useState("base");
   const [cryptoSubTab, setCryptoSubTab] = useState("base");
+  const [currenciesSubTab, setCurrenciesSubTab] = useState("base");
   const [alerts, setAlerts] = useState(DEFAULT_ALERTS);
   const [showAlerts, setShowAlerts] = useState(false);
   const [master, setMaster] = useState([]);
@@ -2243,6 +2249,7 @@ export default function App() {
           { key: "commodities", label: "Commodities", accent: ASSET_CLASSES.commodities.accent },
           { key: "indices", label: "Global Indices", accent: ASSET_CLASSES.indices.accent },
           { key: "crypto", label: "Crypto", accent: ASSET_CLASSES.crypto.accent },
+          { key: "currencies", label: "Currencies", accent: ASSET_CLASSES.currencies.accent },
         ].map((tab) => (
           <button key={tab.key} onClick={() => setActiveAssetClass(tab.key)} style={{
             padding: "10px 18px", border: "none", borderBottom: `2px solid ${activeAssetClass === tab.key ? tab.accent : "transparent"}`,
@@ -2292,6 +2299,16 @@ export default function App() {
             <button key={tab.key} onClick={() => setCryptoSubTab(tab.key)} style={{
               padding: "8px 14px", border: "none", borderBottom: `2px solid ${cryptoSubTab === tab.key ? ASSET_CLASSES.crypto.accent : "transparent"}`,
               background: "transparent", color: cryptoSubTab === tab.key ? ASSET_CLASSES.crypto.accent : T.textDim, fontSize: 11.5, fontWeight: 600,
+            }}>{tab.label}</button>
+          ))}
+        </div>
+      )}
+      {activeAssetClass === "currencies" && (
+        <div style={{ display: "flex", gap: 0, padding: "0 24px", borderBottom: `1px solid ${T.border}`, background: T.surfaceAlt }}>
+          {[{ key: "base", label: "Currencies" }, { key: "breakout", label: "Golden Breakout" }].map((tab) => (
+            <button key={tab.key} onClick={() => setCurrenciesSubTab(tab.key)} style={{
+              padding: "8px 14px", border: "none", borderBottom: `2px solid ${currenciesSubTab === tab.key ? ASSET_CLASSES.currencies.accent : "transparent"}`,
+              background: "transparent", color: currenciesSubTab === tab.key ? ASSET_CLASSES.currencies.accent : T.textDim, fontSize: 11.5, fontWeight: 600,
             }}>{tab.label}</button>
           ))}
         </div>
@@ -2627,6 +2644,9 @@ export default function App() {
 
       {activeAssetClass === "crypto" && cryptoSubTab === "base" && <GenericAssetScreen config={ASSET_CLASSES.crypto} />}
       {activeAssetClass === "crypto" && cryptoSubTab === "breakout" && <GenericGoldenBreakoutScreen config={ASSET_CLASSES.crypto} />}
+
+      {activeAssetClass === "currencies" && currenciesSubTab === "base" && <GenericAssetScreen config={ASSET_CLASSES.currencies} />}
+      {activeAssetClass === "currencies" && currenciesSubTab === "breakout" && <GenericGoldenBreakoutScreen config={ASSET_CLASSES.currencies} />}
     </div>
   );
 }

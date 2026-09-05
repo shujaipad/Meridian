@@ -41,7 +41,7 @@ color-accented for quick visual orientation:
 |---|---|---|
 | **Equities** | Stocks, Golden Breakout, Sectoral, Sectoral Breakout, Market Breadth | Real data: 742 of ~1,977 qualifying stocks; full-universe quarterly upload forthcoming (§3.1) |
 | **Commodities** | Base data, Golden Breakout | Real universe forthcoming (§3.2) |
-| **Currencies** | Base data, Golden Breakout | Real universe forthcoming (§3.2) — new asset class, accent TBD (proposed: teal) |
+| **Currencies** | Base data, Golden Breakout | Real, verified universe (27 instruments, §9); accent teal (`#2DB9A3`), locked 2026-09-05 |
 | **Global Indices** | Base data, Golden Breakout | Real universe forthcoming (§3.2) |
 | **Crypto** | Base data, Golden Breakout | Real universe forthcoming (§3.2) |
 
@@ -446,9 +446,9 @@ simplification reasons as §4.3.4), Equities-only:
 - Sortable/filterable tables throughout, consistent interaction pattern across all
   asset classes (sticky headers, per-column range filters via popovers, dropdown-expand
   detail rows).
-- Color accents per asset class (gold=Equities, copper=Commodities, blue=Global
-  Indices, purple=Crypto) — implemented as accent-prop overrides on a consistent base
-  visual language, not full re-themes per asset class.
+- Color accents per asset class (gold=Equities, copper=Commodities, teal=Currencies,
+  blue=Global Indices, purple=Crypto) — implemented as accent-prop overrides on a
+  consistent base visual language, not full re-themes per asset class.
 - Persistent (until-marked-done) in-app alerts for recurring maintenance triggers —
   **acknowledged limitation:** this is a reminder that fires only when the app happens
   to be opened, not a proactive push notification. Production replaces this with real
