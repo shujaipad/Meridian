@@ -353,39 +353,47 @@ with freshly corporate-action-adjusted history (§9 item 0a). These supersede th
 
 | Horizon | Win rate | Mean return | Independent episodes |
 |---|---|---|---|
-| 20 trading days | **54.8%** | **+4.49%** | **2,403** |
-| 60 trading days | **60.2%** | **+12.21%** | **2,293** |
+| 20 trading days | **55.3%** | **+4.55%** | **2,847** |
+| 60 trading days | **59.8%** | **+12.57%** | **2,592** |
 
-**Why these are trustworthy:** re-pointing the same script at the original 742-stock file
-with freshness ≤10 reproduces the published figures *exactly* — 58.6%/+4.06% at 20d and
-64.2%/+12.05% at 60d. The engine and data are therefore sound, and the differences below
-are real effects rather than artifacts.
+**Why these differ from the previously published 58.6%/64.2%, and why the new figures are
+the correct ones.** Two corrections landed between them, both found by the port-parity
+work (§9 item 0b):
+
+1. The old backtest computed moving averages over the *pivoted market grid*, so any
+   instrument missing a single bar inside a 200-row window had its MA blanked and was
+   silently dropped from that day's population. Production never behaved that way — it
+   walks each instrument's own bars. The backtest was therefore scoring a slightly
+   different population than the model actually runs on.
+2. Golden-cross state was decided by a bare `ma50 > ma200`, which resolves on
+   floating-point noise whenever the two are mathematically equal (any flat stretch).
+
+On the *original 742-stock file* with freshness ≤10, correcting both gives
+**59.6%/+4.09% over 478 episodes** against the previously published 58.6%/+4.06% over
+467. That ~1pp is the correction, not drift — and the Node engine and the Python backtest
+now select an identical candidate set, asserted by `verify_port.py`.
 
 **The two changes, deliberately separated rather than confounded:**
 
 | Universe | Freshness | 20d win | 20d return | 60d win | 60d return | Episodes |
 |---|---|---|---|---|---|---|
-| 742 (original) | ≤10 | 58.6% | +4.06% | 64.2% | +12.05% | 459 |
-| 742 (original) | ≤15 | 58.5% | +3.94% | 64.1% | +10.71% | 938 |
-| 2,089 (full) | ≤10 | 55.1% | +5.11% | 60.3% | +14.51% | 1,254 |
-| **2,089 (full)** | **≤15** | **54.8%** | **+4.49%** | **60.2%** | **+12.21%** | **2,403** |
+| 742 (original) | ≤10 | 59.6% | +4.09% | 64.0% | +11.87% | 478 |
+| 742 (original) | ≤15 | 59.3% | +3.90% | 64.0% | +10.53% | 981 |
+| 2,089 (full) | ≤10 | 56.0% | +5.35% | 60.1% | +15.08% | 1,497 |
+| **2,089 (full)** | **≤15** | **55.3%** | **+4.55%** | **59.8%** | **+12.57%** | **2,847** |
 
 - **Universe effect:** on a like-for-like ≤10-day gate, widening 742 → 2,089 lowers the
-  win rate ~3.5pp but *raises* mean return (+4.06 → +5.11 at 20d; +12.05 → +14.51 at
+  win rate ~3.6pp but *raises* mean return (+4.09 → +5.35 at 20d; +11.87 → +15.08 at
   60d). That is the expected signature of admitting smaller caps — noisier, so fewer
   hits, but higher beta, so larger moves when right. Expectancy improves.
-- **Freshness effect:** ≤10 → ≤15 leaves the win rate essentially flat (−0.3pp at 20d,
-  −0.1pp at 60d) while roughly **doubling the opportunity set**. Mean return gives up
-  ~0.6pp at 20d. The identical pattern appears on the 742-stock universe, confirming it
+- **Freshness effect:** ≤10 → ≤15 costs ~0.7pp of win rate at 20d (~0.3pp at 60d) while
+  roughly **doubling the opportunity set**. Mean return gives up ~0.8pp at 20d. The identical pattern appears on the 742-stock universe, confirming it
   is the threshold doing the work and not the new data.
-- **Sample size:** the model now rests on **2,403 independent episodes rather than 459**,
+- **Sample size:** the model now rests on **2,847 independent episodes rather than 478**,
   a materially firmer footing than the original figures had.
 
 *Original figure, retained for the record: 58.6%/+4.06% (20d) and 64.2%/+12.05% (60d)
-over 467 episodes on the 742-stock universe. The re-run counts 459 rather than 467
-episodes on that same file — win rate and mean return match to the decimal, so the small
-count difference is a data-vintage detail (corporate actions re-adjusted since), not a
-methodology change.*
+over 467 episodes on the 742-stock universe, computed before the two corrections above.*
 
 #### 4.3.1 Parameters tested and explicitly rejected (not toggles — removed entirely)
 Per an explicit standing principle: *"any parameter that is not adding value should not
@@ -988,6 +996,39 @@ For quick reference; each item traces to a fuller explanation above.
    - **48 instruments remain unfetchable** — small recent listings Yahoo does not carry
      (median ₹680 Cr; largest ₹2,751 Cr; ₹40,359 Cr combined, against Reliance's ₹17.9
      lakh Cr alone). Most would fail the 200-day rule regardless.
+0b. **The Node port is built and proven against the Python backtest (2026-09-06).**
+   §6.2 committed to the production compute job reusing Meridian's JS functions rather
+   than reimplementing them, precisely to avoid the dual-codebase drift §7.2 caught in a
+   third-party scorer. That commitment is now structural rather than aspirational:
+   - **`meridian-engine.js`** holds all 22 pure computation functions, extracted out of
+     `meridian.jsx` so the app and the pipeline import *the same module*. Nothing in it
+     touches React, the DOM or `window.storage`, so it runs unchanged under Node. The
+     browser behaviour was verified identical after the extraction (same stock count,
+     same 12 candidates, same 120 industries, no errors).
+   - **`verify_port.mjs` + `verify_port.py`** run both implementations over the same real
+     history and diff the resulting Golden Breakout candidate set. It exits non-zero on
+     any disagreement, so it can gate a build. **Current state: full parity** — 12 of 12
+     candidates shared, separation agreeing to ~1e-13, freshness exact.
+   - **It found two real bugs on the first run**, neither visible from reading the code:
+     - **A floating-point tie decided gate #4.** Golden-cross state was a bare
+       `ma50 > ma200`. Whenever price is flat across both windows the two are
+       *mathematically equal*, and the comparison then resolves on summation noise: for
+       one stock JS computed a difference of 1.7e-13 while pandas computed exactly 0, so
+       the two disagreed on the state and their freshness streaks came out **195 days vs
+       4**. Freshness *is* gate #4. Both now compare with a relative tolerance
+       (`MA_TIE_EPSILON = 1e-9`, far above the ~1e-15 noise and far below the 3% gate #3
+       already demands), so a tie resolves to "not above" in both languages.
+     - **The backtest was scoring a different population than production.** It computed
+       MAs over the pivoted market grid, so an instrument missing one bar inside a
+       200-row window had its MA blanked and vanished from that day — seven instruments
+       were being dropped from the 2026-09-04 set that way. Production walks each
+       instrument's own bars, which is the analytically correct reading of "200-day
+       moving average". The backtest now matches. This is what moved the published
+       58.6% to 59.6% on the original file (§4.3).
+   - **Still to come:** this proves the *engine* ports. The pipeline around it — Supabase
+     I/O, the nightly schedule, the staging-swap writes (§6.3) — is unwritten, and the
+     unit tests deferred as point 10 of the original review remain deferred; `verify_port`
+     is a strong end-to-end assertion, not a substitute for them.
 1. ~~Precise Supabase storage-footprint calculation.~~ **Resolved (2026-09-05), against
    real data.** `prices_daily` dominates the footprint by a wide margin (fundamentals and
    universe tables are trivial even at full scale). Using the real 742-stock price file
@@ -1059,6 +1100,8 @@ be the authoritative list of what belongs in the GitHub repository.
 | Artifact | `meridian-company-master-742.csv` | Superseded by the 2,138-stock master. **Kept deliberately as a historical artifact** — the original pilot universe |
 | Artifact | `meridian-price-history-742.csv` | Superseded by the full backfill. **Kept deliberately as a historical artifact** — the dataset the original §4.3 figures were computed against, and the fixed reference the 2026-09-06 re-run reproduced exactly to prove the new engine sound |
 | Tooling | `fetch_prices.py` | The bulk historical fetcher (§3.4's one-time backfill and quarterly re-pull). Not the daily incremental job, which is separate engineering (§7.3) |
+| Output | `meridian-engine.js` | **The computation engine** — all 22 pure functions, imported by both `meridian.jsx` and the production pipeline so neither holds a copy (§6.2) |
+| Tooling | `verify_port.mjs` + `verify_port.py` | Port parity check: runs the Node engine and the Python backtest over the same history and fails on any divergence in the candidate set |
 | Tooling | `clean_price_calendar.py` | Strips phantom trading days (holiday bars from a few BSE tickers) that silently NaN out every rolling window. Must run after any bulk fetch — see §9 item 0a |
 | Input | `meridian-fundamentals-742.csv` | Real Equities fundamentals |
 | Input | `meridian-commodities-master.csv` | Real, verified universe (27 instruments) — `-prices-sample.csv` remains synthetic, real price history not yet sourced |

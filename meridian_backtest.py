@@ -9,19 +9,23 @@ rejected, with the evidence to show why, specifically so they aren't
 re-derived from scratch.
 
 VALIDATED RESULT — re-run 2026-09-06 against the full 2,089-instrument
-universe with freshly corporate-action-adjusted history:
-    20-trading-day horizon: 54.8% win rate, +4.49% mean return, 2,403 episodes
-    60-trading-day horizon: 60.2% win rate, +12.21% mean return, 2,293 episodes
+universe, with freshly corporate-action-adjusted history AND the MA semantics
+corrected to match the production engine (see rolling_sma below):
+    20-trading-day horizon: 55.3% win rate, +4.55% mean return, 2,847 episodes
+    60-trading-day horizon: 59.8% win rate, +12.57% mean return, 2,592 episodes
 
-    ORIGINAL (742-stock universe, freshness <=10): 58.6%/+4.06% at 20d over 459
-    episodes, 64.2%/+12.05% at 60d. This run reproduces those figures EXACTLY
-    when re-pointed at the 742-stock file with freshness<=10, which is what
-    makes the comparison above trustworthy rather than a data artifact.
+    ON THE ORIGINAL 742-STOCK FILE, freshness<=10, these same corrections give
+    59.6%/+4.09% at 20d over 478 episodes. The figure published before this work
+    was 58.6%/+4.06% over 467. The ~1pp gap is NOT noise and NOT a regression:
+    the old backtest silently dropped any stock-day whose 200-row window
+    contained a missing bar, so it was scoring a slightly different population
+    than production ever ran on. Both now agree — verify_port.py asserts the
+    Node engine and this file select an identical candidate set.
 
-    Reading the difference: the wider universe lowers the win rate ~3.5pp but
-    RAISES mean return (+4.06 -> +5.11 at 20d on a like-for-like <=10d gate) —
-    smaller caps are noisier but higher beta. Widening freshness 10 -> 15 leaves
-    the win rate flat (-0.3pp) and roughly doubles the opportunity set.
+    Reading the universe difference: widening 742 -> 2,089 lowers the win rate
+    ~3.6pp but RAISES mean return (+4.09 -> +5.35 at 20d on a like-for-like
+    <=10d gate) — smaller caps are noisier but higher beta. Widening freshness
+    10 -> 15 costs ~0.7pp of win rate and roughly doubles the opportunity set.
 
 THE FIVE LOCKED GATES (see `passes_golden_breakout()` — this is the ONLY
 gate function that should run in production or in any new backtest):
@@ -132,8 +136,22 @@ def load_price_data_from_csv(path):
 # ============================================================================
 
 def rolling_sma(close, n):
-    """Simple moving average, n-day window."""
-    return close.rolling(n).mean()
+    """
+    Simple moving average over each instrument's own last `n` bars.
+
+    NOT `close.rolling(n).mean()` on the pivoted grid. That grid has a row for
+    every date any instrument traded, so an instrument that missed a session
+    carries a NaN there, and a plain rolling window spanning that NaN returns
+    NaN — blanking the MA, and with it every gate, for a stock whose only sin
+    was not trading one day. Seven instruments were silently dropped from the
+    2026-09-04 candidate set that way.
+
+    meridian-engine.js walks each instrument's own bar series and is right to:
+    a 200-day moving average means 200 of *that stock's* trading days. Dropping
+    NaNs per column before the roll reproduces that exactly, and the port parity
+    check (verify_port.py) fails if the two ever diverge again.
+    """
+    return close.apply(lambda s: s.dropna().rolling(n).mean().reindex(s.index))
 
 
 def compute_200dma_slope(ma200, lookback=20):
@@ -146,6 +164,21 @@ def compute_200dma_slope(ma200, lookback=20):
     """
     slope_pct = (ma200 - ma200.shift(lookback)) / ma200.shift(lookback).abs() * 100
     return slope_pct, slope_pct > 0
+
+
+# Mirrors maAbove() in meridian-engine.js. Two moving averages are mathematically
+# EQUAL whenever price is flat across both windows, and a bare `>` then resolves on
+# floating-point noise instead of on the market. pandas' rolling mean happens to
+# return exactly 0.0 for such a tie while a naive JS summation drifts ~1e-13 above,
+# so the two implementations disagreed on golden-cross state and their freshness
+# streaks diverged 195 days vs 4. Same relative tolerance, same tie-breaking, both
+# languages.
+MA_TIE_EPSILON = 1e-9
+
+
+def ma_above(a, b):
+    """a > b, treating a floating-point tie as 'not above'."""
+    return (a - b) > b.abs() * MA_TIE_EPSILON
 
 
 def compute_golden_cross_state_and_streaks(ma50, ma200):
@@ -165,16 +198,26 @@ def compute_golden_cross_state_and_streaks(ma50, ma200):
     episode — never data from the future relative to any day being
     evaluated.
     """
-    state = ma50 > ma200
+    state = ma_above(ma50, ma200)
     streak = pd.DataFrame(index=state.index, columns=state.columns, dtype=float)
     prior_duration = pd.DataFrame(index=state.index, columns=state.columns, dtype=float)
 
+    # Counted over each instrument's own bars, not over grid rows. On a date an
+    # instrument did not trade, its MAs are NaN and `ma_above` yields False —
+    # injecting a phantom state flip that resets the streak. Since the streak IS
+    # gate #4 (freshness), that would silently mis-gate any stock with a gap.
+    # Restricting to rows where the MAs exist matches meridian-engine.js, which
+    # only ever sees real bars.
+    valid = ma50.notna() & ma200.notna()
+
     for col in state.columns:
-        s = state[col]
+        s = state[col][valid[col]]
+        if s.empty:
+            continue
         grp = (s != s.shift(1)).cumsum()
-        streak[col] = s.groupby(grp).cumcount() + 1
+        streak.loc[s.index, col] = s.groupby(grp).cumcount() + 1
         grp_sizes = s.groupby(grp).size()
-        prior_duration[col] = grp.map(lambda g: grp_sizes.get(g - 1, np.nan))
+        prior_duration.loc[s.index, col] = grp.map(lambda g: grp_sizes.get(g - 1, np.nan))
 
     return state, streak, prior_duration
 
