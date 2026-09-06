@@ -1,0 +1,66 @@
+name: port parity
+
+# Asserts the Node engine and the Python backtest still select an identical
+# Golden Breakout candidate set (§9 item 0b). §6.2 commits production to reusing
+# meridian-engine.js rather than reimplementing the model, and this is what makes
+# that commitment checkable rather than aspirational.
+#
+# It earns its ~4 minutes: on its first run it caught a floating-point tie that
+# was deciding gate #4 (freshness streaks diverging 195 days vs 4) and a
+# population mismatch that silently dropped instruments with a missing bar.
+# Neither was visible from reading the code.
+#
+# Path-scoped rather than run on every push — it only means anything when the
+# model, one of its two implementations, or the data underneath them changes.
+on:
+  push:
+    branches: [main]
+    paths:
+      - meridian-engine.js
+      - meridian_backtest.py
+      - verify_port.mjs
+      - verify_port.py
+      - "meridian-price-history-2090-part*of3.csv"
+      - meridian-company-master-2138.csv
+      - .github/workflows/port-parity.yml
+  pull_request:
+    paths:
+      - meridian-engine.js
+      - meridian_backtest.py
+      - verify_port.mjs
+      - verify_port.py
+      - "meridian-price-history-2090-part*of3.csv"
+      - meridian-company-master-2138.csv
+      - .github/workflows/port-parity.yml
+  workflow_dispatch:
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install pandas numpy
+
+      # The engine has no dependencies — it is deliberately plain JS operating on
+      # arrays, which is exactly what lets the pipeline import it unchanged.
+      - name: Run the Node engine
+        run: node --max-old-space-size=6144 verify_port.mjs > port-node.json
+
+      - name: Diff against the Python implementation
+        run: python3 verify_port.py
+
+      - name: Keep the Node output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: port-node-output
+          path: port-node.json

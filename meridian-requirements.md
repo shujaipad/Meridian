@@ -789,7 +789,11 @@ session. See §6.4 for the resulting maintenance-screen write-path gap this surf
   user-facing effect, not something requiring a decision.
 - `exceljs` or `xlsx` (npm) — the admin tool's Excel parsing (§3.1, §6.4).
 - pm2 (optional) — process management for the VPS's cron jobs.
-- GitHub Actions (optional, free tier) — CI, running tests on push.
+- **GitHub Actions — CI, now wired (2026-09-06).** Two workflows:
+  `data-integrity.yml` runs on every push (~15s) and asserts the guards in
+  `check_data_integrity.py`; `port-parity.yml` is path-scoped to the engine, the
+  backtest and the data, and runs `verify_port` (~4min) to assert the two
+  implementations still agree. Both are free-tier comfortable.
 - UptimeRobot (optional, free tier) — external heartbeat monitoring of the VPS, catching
   "the whole server is down" in a way `fetch_job_log` (which lives *on* that server)
   cannot.
@@ -1101,6 +1105,8 @@ be the authoritative list of what belongs in the GitHub repository.
 | Artifact | `meridian-price-history-742.csv` | Superseded by the full backfill. **Kept deliberately as a historical artifact** — the dataset the original §4.3 figures were computed against, and the fixed reference the 2026-09-06 re-run reproduced exactly to prove the new engine sound |
 | Tooling | `fetch_prices.py` | The bulk historical fetcher (§3.4's one-time backfill and quarterly re-pull). Not the daily incremental job, which is separate engineering (§7.3) |
 | Output | `meridian-engine.js` | **The computation engine** — all 22 pure functions, imported by both `meridian.jsx` and the production pipeline so neither holds a copy (§6.2) |
+| Tooling | `check_data_integrity.py` | Fast guards over the committed data — every assertion corresponds to a bug that actually happened (float BSE codes, phantom trading days, non-positive adjusted prices). Run in CI on every push |
+| Tooling | `.github/workflows/` | `data-integrity.yml` (every push) and `port-parity.yml` (path-scoped to engine/backtest/data) |
 | Tooling | `verify_port.mjs` + `verify_port.py` | Port parity check: runs the Node engine and the Python backtest over the same history and fails on any divergence in the candidate set |
 | Tooling | `clean_price_calendar.py` | Strips phantom trading days (holiday bars from a few BSE tickers) that silently NaN out every rolling window. Must run after any bulk fetch — see §9 item 0a |
 | Input | `meridian-fundamentals-742.csv` | Real Equities fundamentals |

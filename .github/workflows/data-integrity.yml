@@ -1,0 +1,22 @@
+name: data integrity
+
+# Fast guards over the committed data — ~15s. Runs on everything, because each
+# assertion corresponds to a bug that already happened once and would otherwise
+# only surface much later, in a pipeline run or a silently wrong backtest.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install pandas
+      - run: python3 check_data_integrity.py
