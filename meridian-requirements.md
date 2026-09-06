@@ -39,7 +39,7 @@ color-accented for quick visual orientation:
 
 | Asset class | Sub-tabs | Data status |
 |---|---|---|
-| **Equities** | Stocks, Golden Breakout, Sectoral, Sectoral Breakout, Market Breadth | Full universe delivered 2026-09-06: **2,138 stocks** after removing REITs/InvITs (§9). Price history covers 740; the rest await backfill |
+| **Equities** | Stocks, Golden Breakout, Sectoral, Sectoral Breakout, Market Breadth | **2,138 stocks**, with 5-year price history backfilled for **2,089** of them (§9). 120 sectoral indices build from it |
 | **Commodities** | Base data, Golden Breakout | Real universe forthcoming (§3.2) |
 | **Currencies** | Base data, Golden Breakout | Real, verified universe (27 instruments, §9); accent teal (`#2DB9A3`), locked 2026-09-05 |
 | **Global Indices** | Base data, Golden Breakout | Real universe forthcoming (§3.2) |
@@ -120,7 +120,8 @@ oversight to silently carry forward.
 
 ### 2.3 Known limitations of the current (artifact) implementation
 - **Hard storage ceiling.** Client-side artifact storage caps at **20MB total**, across
-  all data combined. The real Equities price history alone is ~75MB as stored data —
+  all data combined. The real Equities price history alone is ~127MB as stored data
+  (2.14M rows, full universe) —
   structurally larger than the entire budget, chunked or not. This is not a bug; it is a
   platform limit that cannot be engineered around inside this environment. It is the
   primary reason production requires a real backend.
@@ -183,8 +184,12 @@ oversight to silently carry forward.
 - **Recurring:** the same backfill logic runs quarterly, scoped to whatever's newly
   added to the universe that cycle, plus a full-universe re-pull as a backup
   reconciliation check (§3.5).
-- Sourcing scripts exist (Python/yfinance-based) for this exact "bulk historical pull"
-  shape — see §7 for evaluation and reuse plan.
+- **Built and run: `fetch_prices.py`** (2026-09-06). Replaces the older Colab scripts
+  §7.3 evaluated — it runs unattended, logs per-instrument success/failure, rate-limits,
+  resumes after interruption, and handles the four-way ticker fallback Yahoo's
+  inconsistent Indian coverage requires. Used for the initial full backfill; the same
+  script serves the quarterly re-pull. **Only the bulk shape** — the daily incremental
+  job remains separate engineering (§7.3).
 
 ### 3.5 Daily maintenance (prices)
 - **Daily fetch:** incremental — today's new bar(s) only, not a re-pull of full history.
@@ -800,15 +805,21 @@ Meridian's own logic:
 **Locked decision: discarded entirely, not merged.** Meridian's own Composite Score
 logic remains the single source of truth (§4.2, §6.2).
 
-### 7.3 Historical price fetch (Yahoo Finance) — reusable for bulk, not for daily
-**Reusable as-is (once I/O is fixed):** ISIN/ticker mapping (shared with §7.1), batched
-`yf.download(threads=True)` mechanics, `auto_adjust=True` for corporate actions. This is
-a strong fit for the one-time initial backfill and the quarterly full-universe re-pull
-(§3.4).
+### 7.3 Historical price fetch (Yahoo Finance) — bulk now built; daily still to do
+**Superseded by `fetch_prices.py` (2026-09-06).** The evaluation below stands as the
+reasoning that shaped it; the bulk half is now written, run against the full universe,
+and validated (§9 item 0a). It calls Yahoo's chart endpoint directly rather than going
+through `yf.download`, and takes the adjustment from `adjclose` — the equivalent of
+`auto_adjust=True`, which the original evaluation correctly identified as essential.
 
-**Not reusable for the daily job — needs new engineering, not adaptation:**
-The script re-fetches the full 5-year window on every run. A true daily incremental job
-needs a fundamentally different design:
+*Original assessment, retained:* reusable as-is (once I/O is fixed) were the ISIN/ticker
+mapping (shared with §7.1), batched `yf.download(threads=True)` mechanics, and
+`auto_adjust=True` for corporate actions — a strong fit for the one-time initial backfill
+and the quarterly full-universe re-pull (§3.4).
+
+**The daily job is still unwritten, and `fetch_prices.py` is not it.** It re-fetches the
+full 5-year window every run, which is correct for a backfill and wrong for a nightly.
+A true daily incremental job needs a fundamentally different design:
 - A stored **watermark** (last successfully-fetched date) per instrument, in Supabase.
 - A hard distinction between **"no new data"** and **"fetch failed"** — a failure must
   not advance the watermark, so the next run naturally retries the missed day. This is
@@ -896,19 +907,60 @@ For quick reference; each item traces to a fuller explanation above.
      operating financial companies whose names merely contain "Trust", the same class of
      trap as the "housing"/"Warehousing" case in §4.2. This leaves 125 industry
      categories, of which 120 have the 3+ constituents needed to form an index.
-   - **Consequent work, still open:** ~1,400 stocks have no price history at all. The
-     full backfill (§3.4/§7.3) is the gating task before the wider universe is usable.
+   - ~~Consequent work: ~1,400 stocks have no price history.~~ **Backfill completed
+     2026-09-06** — see item 0a below.
+0a. **Price-history backfill completed (2026-09-06)** — `fetch_prices.py` pulled 5 years
+   of daily adjusted OHLCV for the full universe: **2,140,635 rows across 2,089 of the
+   2,138 instruments**, 2021-09-06 to 2026-09-04, zero duplicates, zero non-positive
+   prices. **1,980 instruments clear §3.1's 200-trading-day bar**; 1,922 clear 252.
+   Three findings worth keeping, each caught by validating against the existing history
+   rather than trusting the fetch:
+   - **Adjusted vs. raw close — the one that mattered.** Yahoo's chart API returns *raw*
+     `close`; the corporate-action adjustment lives in a separate `adjclose` field. The
+     first pilot came back a median 2% off the existing file with a *constant* per-stock
+     offset (HCL Tech: exactly 23.0127% on every date) — the signature of dividend
+     adjustment, not noise. Shipping that would have quietly corrupted every MA-based
+     signal, exactly as §3.5 warns. The fetcher now uses `adjclose` and scales High/Low
+     by the same per-bar ratio so OHLC stays internally consistent (equivalent to
+     yfinance's `auto_adjust=True`). Re-validated after the fix: median difference
+     **0.00000%**, volume matching **100%**, and the single residual stock differed by a
+     constant 0.989313 ratio — a dividend that went ex- after the old file was cut, which
+     is precisely the retroactive re-basing §3.5 describes.
+   - **Yahoo's Indian tickers are inconsistent in two ways**, so a two-candidate chain
+     is not enough: BSE symbols are sometimes numeric and sometimes alphabetic
+     (`NSDL.BO`, not `544467.BO`), and the Trendlyne extract leaves NSE Code blank for
+     stocks that *are* NSE-listed (Kennametal, Kirloskar Ferrous). The four-way fallback
+     (`NSECode.NS → BSECode.BO → Symbol.NS → Symbol.BO`) recovered **305 of 353**
+     initial failures. This logic carries straight into the quarterly re-pull.
+   - **A self-inflicted bug worth recording:** 353 instruments failed the first run
+     because the master's `BSECode` had been rewritten as `544467.0` by a pandas
+     read/write round-trip, producing tickers like `544467.0.BO`. The trap was
+     identified and handled when the master was first built, then silently reintroduced.
+     **The master must be read with `dtype=str`** to stop it recurring.
+   - **Elcid Investments excluded.** Its adjusted series runs −₹4,082 to ₹330,340 —
+     Yahoo's dividend adjustment exceeds its pre-2024 price of ~₹3, a genuine artefact of
+     that stock's one-day repricing. Unusable for moving averages, so dropped under
+     §3.1's exclude-rather-than-carry policy.
+   - **48 instruments remain unfetchable** — small recent listings Yahoo does not carry
+     (median ₹680 Cr; largest ₹2,751 Cr; ₹40,359 Cr combined, against Reliance's ₹17.9
+     lakh Cr alone). Most would fail the 200-day rule regardless.
 1. ~~Precise Supabase storage-footprint calculation.~~ **Resolved (2026-09-05), against
    real data.** `prices_daily` dominates the footprint by a wide margin (fundamentals and
    universe tables are trivial even at full scale). Using the real 742-stock price file
    (807,339 rows, 67.4MB as CSV) as a baseline: a normalized table (surrogate `stock_id`
    instead of repeating the ISIN text, `numeric`/`date` types instead of full-precision
-   text floats) plus its index lands around 60–70MB at today's partial universe, scaling
+   text floats) plus its index lands around 60–70MB at that partial universe, scaling
    to **roughly 150–200MB at the full ~1,800–2,000-stock target** — comfortably under the
    500MB free tier, **provided `technicals_daily`/`sectoral_technicals_daily` are built
    as snapshot tables, not append-only daily history** (now locked, §6.4) — that
    distinction was the single biggest swing factor and is why this is resolved rather
    than still open.
+
+   **Confirmed against the actual full dataset (2026-09-06).** The completed backfill is
+   2,140,635 rows / ~127MB as CSV — 2.65× the 742-stock baseline, almost exactly the
+   ratio the estimate assumed. The normalized `prices_daily` projection therefore lands
+   at **~150–170MB including its index**, inside the range predicted above and leaving
+   roughly two-thirds of the free tier free for everything else. No revision needed.
 2. ~~Real data sourcing for Commodities, Currencies, Global Indices, and Crypto~~
    **Master universe lists delivered and verified (2026-09-05)** — 27 Commodities, 27
    Currencies, 26 Crypto, 23 Global Indices (`meridian-{commodities,currencies,crypto,
@@ -959,8 +1011,10 @@ be the authoritative list of what belongs in the GitHub repository.
 | Type | File | What it is |
 |---|---|---|
 | Input | `meridian-company-master-2138.csv` | **The equity universe** — 2,138 stocks, delivered 2026-09-06 (§9). Carries both taxonomies plus NSE/BSE codes for Yahoo ticker routing |
-| Input | `meridian-company-master-742.csv` | Superseded as the universe definition, retained as the companion master to the 740-stock price history until the full backfill runs |
-| Input | `meridian-price-history-742.csv` | Real Equities price history (~67MB) |
+| Input | `meridian-price-history-2090-part{1,2,3}of3.csv` | **The price history** — 5yr daily adjusted OHLCV, 2,140,635 rows, 2,089 instruments (~127MB, split three ways; see §10.3) |
+| Input | `meridian-company-master-742.csv` | Superseded. Retained only as the companion master to the original 742-stock history, which the published §4.3 backtest figures were computed against |
+| Input | `meridian-price-history-742.csv` | Superseded by the full backfill. Retained for reproducibility of the §4.3 backtest results |
+| Tooling | `fetch_prices.py` | The bulk historical fetcher (§3.4's one-time backfill and quarterly re-pull). Not the daily incremental job, which is separate engineering (§7.3) |
 | Input | `meridian-fundamentals-742.csv` | Real Equities fundamentals |
 | Input | `meridian-commodities-master.csv` | Real, verified universe (27 instruments) — `-prices-sample.csv` remains synthetic, real price history not yet sourced |
 | Input | `meridian-currencies-master.csv` | Real, verified universe (27 instruments) — new asset class; no price file yet, synthetic or real |
@@ -971,6 +1025,12 @@ be the authoritative list of what belongs in the GitHub repository.
 | Output | `meridian-requirements.md` | This document (vision, methodology, locked architecture) |
 | Output | `meridian_backtest.py` | The consolidated, authoritative backtest script |
 | Tooling | `preview/` | Local dev harness — runs `meridian.jsx` in a real browser against the real data files, for eyeballing changes and screenshotting every screen. Not part of the production build; see `preview/README.md` |
+
+**Superseded 2026-09-06** by the full-universe backfill (§9 item 0a) — the notes below
+describe the original 742-stock file and the universe as it stood before the 2,138-stock
+master arrived. Retained because the §4.3 backtest figures were computed against that
+data, and because the partial-history analysis it records is the reasoning behind §3.1's
+200-day threshold.
 
 **Status check (2026-09-05):** `meridian-price-history-742.csv` is now present in the
 repository (67.4MB, delivered compressed and reconstituted directly rather than through
@@ -1022,13 +1082,18 @@ for something still current:
 
 ### 10.3 A real redundancy, resolved by context rather than by data difference
 
-The 8 split price-history files (`meridian-price-history-742-part1of8.csv` through
-`part8of8.csv`) contain the exact same underlying data as the single
-`meridian-price-history-742.csv` — they were created specifically as a workaround for a
-browser-based upload crash encountered while using the client-side artifact (§2.3).
-**Excluded from the repository set:** Claude Code reads files directly from the
-repository rather than through a browser upload flow, so the crash they were built to
-work around does not apply in that context, and the split files add no value there.
+**Historical note.** An earlier set of 8 split files (`meridian-price-history-742-part1of8.csv`
+through `part8of8.csv`) held the same data as the single `meridian-price-history-742.csv`.
+They were a workaround for a browser-upload crash in the client-side artifact (§2.3), and
+were excluded from the repository because Claude Code reads files directly and the crash
+did not apply.
+
+**The current history ships split for an entirely different and non-negotiable reason.**
+`meridian-price-history-2090-part{1,2,3}of3.csv` exists because the combined 127MB
+exceeds **GitHub's hard 100MB per-file limit on push** — not a preference, a rejection.
+The split is **by instrument, never mid-series**, so each part is independently loadable
+and reassembly is a plain concatenation (drop the repeated header). `preview/trim-prices.mjs`
+reads all three transparently.
 
 ---
 
