@@ -1,0 +1,657 @@
+{
+ "ok": [
+  {
+   "isin": "INE301O01023",
+   "ticker": "NSDL.BO",
+   "bars": 269
+  },
+  {
+   "isin": "INE717A01029",
+   "ticker": "KENNAMET.NS",
+   "bars": 661
+  },
+  {
+   "isin": "INE884B01025",
+   "ticker": "KIRLFER.NS",
+   "bars": 661
+  },
+  {
+   "isin": "INE0OXY01013",
+   "ticker": "AFCOM.BO",
+   "bars": 515
+  },
+  {
+   "isin": "INE266D01021",
+   "ticker": "GRAUWEIL.NS",
+   "bars": 661
+  },
+  {
+   "isin": "INE00GK01023",
+   "ticker": "YASHHV.BO",
+   "bars": 425
+  },
+  {
+   "isin": "INE155D01018",
+   "ticker": "SELECTRIC.BO",
+   "bars": 34
+  },
+  {
+   "isin": "INE1B3501014",
+   "ticker": "ZELIO.BO",
+   "bars": 227
+  },
+  {
+   "isin": "INE1SRC01010",
+   "ticker": "MILLWORKS.BO",
+   "bars": 34
+  },
+  {
+   "isin": "INE0FMZ01045",
+   "ticker": "SHREEREF.BO",
+   "bars": 272
+  },
+  {
+   "isin": "INE0QVH01025",
+   "ticker": "KPGEL.BO",
+   "bars": 607
+  },
+  {
+   "isin": "INE795B01031",
+   "ticker": "CITURGIA.BO",
+   "bars": 1237
+  },
+  {
+   "isin": "INE0VN801010",
+   "ticker": "RAJESH.BO",
+   "bars": 435
+  },
+  {
+   "isin": "INE449C01025",
+   "ticker": "ANDREWYU.NS",
+   "bars": 577
+  },
+  {
+   "isin": "INE1YPB01014",
+   "ticker": "AGL.NS",
+   "bars": 46
+  },
+  {
+   "isin": "INE288301026",
+   "ticker": "PPEL.BO",
+   "bars": 24
+  },
+  {
+   "isin": "INE0XBS01012",
+   "ticker": "AIRFLOA.BO",
+   "bars": 240
+  },
+  {
+   "isin": "INE0WKY01013",
+   "ticker": "INDOSMC.BO",
+   "bars": 156
+  },
+  {
+   "isin": "INE13VU01016",
+   "ticker": "BEEZAASAN.BO",
+   "bars": 375
+  },
+  {
+   "isin": "INE443P01038",
+   "ticker": "PERVASIVE.BO",
+   "bars": 1238
+  },
+  {
+   "isin": "INE1ABX01018",
+   "ticker": "UNIFIED.BO",
+   "bars": 318
+  },
+  {
+   "isin": "INE1E4401010",
+   "ticker": "EXATO.BO",
+   "bars": 187
+  },
+  {
+   "isin": "INE0UZO01024",
+   "ticker": "NEETUYOSHI.BO",
+   "bars": 292
+  },
+  {
+   "isin": "INE2L0V01019",
+   "ticker": "SUSAN.BO",
+   "bars": 57
+  },
+  {
+   "isin": "INE1IJQ01026",
+   "ticker": "BAIKAKAJI.BO",
+   "bars": 170
+  },
+  {
+   "isin": "INE19QK01022",
+   "ticker": "TECHNOCRAT.BO",
+   "bars": 11
+  },
+  {
+   "isin": "INE0TJ801010",
+   "ticker": "LTELEVATOR.BO",
+   "bars": 239
+  },
+  {
+   "isin": "INE1RQS01010",
+   "ticker": "MRTX.BO",
+   "bars": 65
+  },
+  {
+   "isin": "INE1U6D01014",
+   "ticker": "TIPCO.BO",
+   "bars": 1
+  },
+  {
+   "isin": "INE0ZOM01013",
+   "ticker": "GOELCONS.BO",
+   "bars": 247
+  },
+  {
+   "isin": "INE1KLZ01011",
+   "ticker": "SYSTEMATIC.BO",
+   "bars": 231
+  },
+  {
+   "isin": "INE13YH01017",
+   "ticker": "SKM.BO",
+   "bars": 220
+  },
+  {
+   "isin": "INE15XJ01010",
+   "ticker": "APPL.BO",
+   "bars": 234
+  },
+  {
+   "isin": "INE0WDX01010",
+   "ticker": "CLN.BO",
+   "bars": 396
+  },
+  {
+   "isin": "INE0HSD01011",
+   "ticker": "FABCLEAN.BO",
+   "bars": 410
+  },
+  {
+   "isin": "INE14LM01012",
+   "ticker": "PAJSON.BO",
+   "bars": 178
+  },
+  {
+   "isin": "INE0XX801016",
+   "ticker": "SUGSLLOYD.BO",
+   "bars": 249
+  },
+  {
+   "isin": "INE2B5L01011",
+   "ticker": "MSAFE.BO",
+   "bars": 147
+  },
+  {
+   "isin": "INE0TL001013",
+   "ticker": "CRYOGENIC.BO",
+   "bars": 288
+  },
+  {
+   "isin": "INE0U6201010",
+   "ticker": "SUBAM.BO",
+   "bars": 475
+  },
+  {
+   "isin": "INE1OOT01028",
+   "ticker": "DIGILOGIC.BO",
+   "bars": 152
+  },
+  {
+   "isin": "INE1E1V01017",
+   "ticker": "HRS.BO",
+   "bars": 178
+  },
+  {
+   "isin": "INE14VP01014",
+   "ticker": "JDCABLES.BO",
+   "bars": 235
+  },
+  {
+   "isin": "INE0SMW01011",
+   "ticker": "PPARIVAH.BO",
+   "bars": 361
+  },
+  {
+   "isin": "INE00ST01011",
+   "ticker": "BRGIL.BO",
+   "bars": 409
+  },
+  {
+   "isin": "INE208H01016",
+   "ticker": "MEEIND.BO",
+   "bars": 29
+  },
+  {
+   "isin": "INE12Z301012",
+   "ticker": "SOTEFIN.BO",
+   "bars": 32
+  },
+  {
+   "isin": "INE0QQJ01021",
+   "ticker": "PARMESHWAR.BO",
+   "bars": 409
+  },
+  {
+   "isin": "INE1I1301016",
+   "ticker": "WORKMATES.BO",
+   "bars": 200
+  },
+  {
+   "isin": "INE0V0L01028",
+   "ticker": "MSECL.BO",
+   "bars": 275
+  },
+  {
+   "isin": "INE2KRP01017",
+   "ticker": "DEVSON.BO",
+   "bars": 37
+  },
+  {
+   "isin": "INE0U9D01019",
+   "ticker": "MAHALIFE.BO",
+   "bars": 200
+  },
+  {
+   "isin": "INE0VDK01019",
+   "ticker": "PURPLEWAVE.BO",
+   "bars": 187
+  }
+ ],
+ "failed": [
+  {
+   "isin": "INE1DV401010",
+   "name": "Monolithisch India Ltd.",
+   "attempts": [
+    "MONOLITH.NS:404 no such symbol",
+    "MONOLITH.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0VTV01012",
+   "name": "Anondita Medicare Ltd.",
+   "attempts": [
+    "ANONDITA.NS:404 no such symbol",
+    "ANONDITA.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0YHV01011",
+   "name": "OBSC Perfection Ltd.",
+   "attempts": [
+    "OBSCP.NS:404 no such symbol",
+    "OBSCP.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0YU901016",
+   "name": "Danish Power Ltd.",
+   "attempts": [
+    "DANISH.NS:404 no such symbol",
+    "DANISH.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE1G2W01011",
+   "name": "Q-Line Biotech Ltd.",
+   "attempts": [
+    "QLINE.NS:404 no such symbol",
+    "QLINE.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE24H301028",
+   "name": "Vivid Electromech Ltd.",
+   "attempts": [
+    "VIVIDEL.NS:404 no such symbol",
+    "VIVIDEL.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE17D601016",
+   "name": "Safe Enterprises Retail Fixtures Ltd.",
+   "attempts": [
+    "SAFEENTP.NS:404 no such symbol",
+    "SAFEENTP.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0DM401012",
+   "name": "Shri Ahimsa Naturals Ltd.",
+   "attempts": [
+    "SHRIAHIMSA.NS:404 no such symbol",
+    "SHRIAHIMSA.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0PXC01024",
+   "name": "Emkay Tools Ltd.",
+   "attempts": [
+    "ETL.NS:404 no such symbol",
+    "ETL.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE06IJ01010",
+   "name": "Utssav CZ Gold Jewels Ltd.",
+   "attempts": [
+    "UTSSAV.NS:404 no such symbol",
+    "UTSSAV.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0VCK01011",
+   "name": "FlySBS Aviation Ltd.",
+   "attempts": [
+    "FLYSBS.NS:404 no such symbol",
+    "FLYSBS.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE1ARD01016",
+   "name": "Sacheerome Ltd.",
+   "attempts": [
+    "SACHEEROME.NS:404 no such symbol",
+    "SACHEEROME.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0RFP01011",
+   "name": "Sathlokhar Synergys E&C Global Ltd.",
+   "attempts": [
+    "SSEGL.NS:404 no such symbol",
+    "SSEGL.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0SFW01015",
+   "name": "Freshara Agro Exports Ltd.",
+   "attempts": [
+    "FRESHARA.NS:404 no such symbol",
+    "FRESHARA.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0TR001017",
+   "name": "Vision Infra Equipment Solutions Ltd.",
+   "attempts": [
+    "VIESL.NS:404 no such symbol",
+    "VIESL.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE17WC01013",
+   "name": "Tejas Cargo India Ltd.",
+   "attempts": [
+    "TEJASCARGO.NS:404 no such symbol",
+    "TEJASCARGO.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE1J5V01013",
+   "name": "Anawil Wire & Engineering Ltd.",
+   "attempts": [
+    "ANAWIL.NS:404 no such symbol",
+    "ANAWIL.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0Z7N01017",
+   "name": "Tankup Engineers Ltd.",
+   "attempts": [
+    "TANKUP.NS:404 no such symbol",
+    "TANKUP.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0RBQ01018",
+   "name": "Sahasra Electronic Solutions Ltd.",
+   "attempts": [
+    "SAHASRA.NS:404 no such symbol",
+    "SAHASRA.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0SA001017",
+   "name": "RNFI Services Ltd.",
+   "attempts": [
+    "RNFI.NS:404 no such symbol",
+    "RNFI.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0U2N01013",
+   "name": "Sunlite Recycling Industries Ltd.",
+   "attempts": [
+    "SUNLITE.NS:404 no such symbol",
+    "SUNLITE.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE1OOJ01011",
+   "name": "Apsis Aerocom Ltd.",
+   "attempts": [
+    "APSISAERO.NS:404 no such symbol",
+    "APSISAERO.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE1H7V01011",
+   "name": "Parth Electricals & Engineering Ltd.",
+   "attempts": [
+    "PARTH.NS:404 no such symbol",
+    "PARTH.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0RMF01018",
+   "name": "Osel Devices Ltd.",
+   "attempts": [
+    "OSELDEVICE.NS:404 no such symbol",
+    "OSELDEVICE.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0MYZ01012",
+   "name": "Influx Healthtech Ltd.",
+   "attempts": [
+    "INFLUX.NS:404 no such symbol",
+    "INFLUX.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE08NZ01012",
+   "name": "Namo eWaste Management Ltd.",
+   "attempts": [
+    "NAMOEWASTE.NS:404 no such symbol",
+    "NAMOEWASTE.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE1MTV01019",
+   "name": "KRM Ayurveda Ltd.",
+   "attempts": [
+    "KRMAYURVED.NS:404 no such symbol",
+    "KRMAYURVED.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE17GV01016",
+   "name": "Patil Automation Ltd.",
+   "attempts": [
+    "PATILAUTOM.NS:404 no such symbol",
+    "PATILAUTOM.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE1CEJ01017",
+   "name": "E to E Transportation Infrastructure Ltd.",
+   "attempts": [
+    "E2ERAIL.NS:404 no such symbol",
+    "E2ERAIL.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE1KPX01025",
+   "name": "Credent Connect N Care Ltd.",
+   "attempts": [
+    "CREDENT.NS:404 no such symbol",
+    "CREDENT.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0I7D01019",
+   "name": "Foce India Ltd.",
+   "attempts": [
+    "FOCE.NS:404 no such symbol",
+    "FOCE.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0X3M01010",
+   "name": "Blue Water Logistics Ltd.",
+   "attempts": [
+    "BLUEWATER.NS:404 no such symbol",
+    "BLUEWATER.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE1AII01014",
+   "name": "Iware Supplychain Services Ltd.",
+   "attempts": [
+    "IWARE.NS:404 no such symbol",
+    "IWARE.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0B2N01016",
+   "name": "Chandan Healthcare Ltd.",
+   "attempts": [
+    "CHANDAN.NS:404 no such symbol",
+    "CHANDAN.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0EAS01014",
+   "name": "Connplex Cinemas Ltd.",
+   "attempts": [
+    "CONNPLEX.NS:404 no such symbol",
+    "CONNPLEX.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0L2Y01011",
+   "name": "Arham Technologies Ltd.",
+   "attempts": [
+    "ARHAM.NS:404 no such symbol",
+    "ARHAM.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE1FL101016",
+   "name": "Shreeji Global FMCG Ltd.",
+   "attempts": [
+    "SHETHJI.NS:404 no such symbol",
+    "SHETHJI.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0XWS01018",
+   "name": "Taurian Mps Ltd.",
+   "attempts": [
+    "TAURIAN.NS:404 no such symbol",
+    "TAURIAN.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0VG001016",
+   "name": "ANB Metal Cast Ltd.",
+   "attempts": [
+    "AMCL.NS:404 no such symbol",
+    "AMCL.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0TVT01024",
+   "name": "Ganesh Infraworld Ltd.",
+   "attempts": [
+    "GANESHIN.NS:404 no such symbol",
+    "GANESHIN.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0NA501011",
+   "name": "Divine Hira Jewellers Ltd.",
+   "attempts": [
+    "DIVINEHIRA.NS:404 no such symbol",
+    "DIVINEHIRA.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0U2501017",
+   "name": "Forcas Studio Ltd.",
+   "attempts": [
+    "FORCAS.NS:404 no such symbol",
+    "FORCAS.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE2OL601013",
+   "name": "Teamtech Formwork Solutions Ltd.",
+   "attempts": [
+    "TEAMTECH.NS:404 no such symbol",
+    "TEAMTECH.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0VG601013",
+   "name": "Pelatro Ltd.",
+   "attempts": [
+    "PELATRO.NS:404 no such symbol",
+    "PELATRO.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE15B101011",
+   "name": "Optivalue Tek Consulting Ltd.",
+   "attempts": [
+    "OPTIVALUE.NS:404 no such symbol",
+    "OPTIVALUE.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0P5R01014",
+   "name": "Purple United Sales Ltd.",
+   "attempts": [
+    "PURPLEUTED.NS:404 no such symbol",
+    "PURPLEUTED.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE0Y5H01014",
+   "name": "TechD Cybersecurity Ltd.",
+   "attempts": [
+    "TECHD.NS:404 no such symbol",
+    "TECHD.BO:404 no such symbol"
+   ]
+  },
+  {
+   "isin": "INE156901014",
+   "name": "Neptune Petrochemicals Ltd.",
+   "attempts": [
+    "NEPTUNE.NS:404 no such symbol",
+    "NEPTUNE.BO:404 no such symbol"
+   ]
+  }
+ ],
+ "started": "2026-09-06T11:07:27",
+ "finished": "2026-09-06T11:10:36"
+}

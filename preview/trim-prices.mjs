@@ -8,14 +8,24 @@
 // visible difference is Market Breadth, whose chart is a walk through all
 // available history and so starts partway across instead of spanning 5 years.
 
-import { createReadStream } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 const DAYS = Number(process.argv[2] ?? 320);
-const SRC = fileURLToPath(new URL("../meridian-price-history-742.csv", import.meta.url));
+// The full history ships as three parts — a single file would exceed GitHub's
+// 100MB per-file limit. Split by instrument, never mid-series, so order doesn't
+// matter here.
+const SRCS = [1, 2, 3]
+  .map((i) => fileURLToPath(new URL(`../meridian-price-history-2090-part${i}of3.csv`, import.meta.url)))
+  .filter(existsSync);
 const OUT = fileURLToPath(new URL("./prices-trim.csv", import.meta.url));
+
+if (!SRCS.length) {
+  console.error("no meridian-price-history-2090-part*.csv found in the repo root");
+  process.exit(1);
+}
 
 // Rows are grouped by ISIN and date-ascending within each group, so buffering a
 // rolling window of the last DAYS rows per ISIN keeps the most recent ones
@@ -23,18 +33,22 @@ const OUT = fileURLToPath(new URL("./prices-trim.csv", import.meta.url));
 const perIsin = new Map();
 let header = null;
 
-const rl = createInterface({ input: createReadStream(SRC), crlfDelay: Infinity });
-for await (const line of rl) {
-  if (!line) continue;
-  if (header === null) {
-    header = line;
-    continue;
+for (const src of SRCS) {
+  let first = true;
+  const rl = createInterface({ input: createReadStream(src), crlfDelay: Infinity });
+  for await (const line of rl) {
+    if (!line) continue;
+    if (first) {                 // each part carries its own header row
+      first = false;
+      header ??= line;
+      continue;
+    }
+    const isin = line.slice(0, line.indexOf(","));
+    let rows = perIsin.get(isin);
+    if (!rows) perIsin.set(isin, (rows = []));
+    rows.push(line);
+    if (rows.length > DAYS) rows.shift();
   }
-  const isin = line.slice(0, line.indexOf(","));
-  let rows = perIsin.get(isin);
-  if (!rows) perIsin.set(isin, (rows = []));
-  rows.push(line);
-  if (rows.length > DAYS) rows.shift();
 }
 
 const out = await open(OUT, "w");
