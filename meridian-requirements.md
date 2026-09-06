@@ -39,7 +39,7 @@ color-accented for quick visual orientation:
 
 | Asset class | Sub-tabs | Data status |
 |---|---|---|
-| **Equities** | Stocks, Golden Breakout, Sectoral, Sectoral Breakout, Market Breadth | Full universe delivered 2026-09-06: **2,165 stocks** (§9). Price history covers 740 of them; the other 1,425 await backfill |
+| **Equities** | Stocks, Golden Breakout, Sectoral, Sectoral Breakout, Market Breadth | Full universe delivered 2026-09-06: **2,138 stocks** after removing REITs/InvITs (§9). Price history covers 740; the rest await backfill |
 | **Commodities** | Base data, Golden Breakout | Real universe forthcoming (§3.2) |
 | **Currencies** | Base data, Golden Breakout | Real, verified universe (27 instruments, §9); accent teal (`#2DB9A3`), locked 2026-09-05 |
 | **Global Indices** | Base data, Golden Breakout | Real universe forthcoming (§3.2) |
@@ -96,7 +96,7 @@ pipeline depends on), % from 52-week high/low, CMP/52w-low ratio, Volume Breakou
 (repurposed from the removed P/B column, not a new one — see below), computed P/E
 (CMP ÷ latest EPS, with fallback to the manual value), 200DMA Slope% + Rising flag, and
 the full Composite Fundamental Score + 5-tier quintile system with the financial-sector
-exemption (§4.2) — including a `OR(...)` formula enumerating the 11 verified financial
+exemption (§4.2) — including a `OR(...)` formula enumerating the verified financial
 Industry Name categories directly, since Excel has no clean equivalent to a JS `Set`.
 
 **A real bug found and fixed in the Excel pipeline specifically, worth recording:** the
@@ -257,18 +257,35 @@ Golden Breakout model (§4.4) — retained purely as a **display-only reference 
 | Asset Turnover (latest) | 10% |
 | Capex Intensity (CWIP % of Fixed Assets) | 5% |
 
-**Financial-sector exemption:** for the 11 verified Industry Name categories below,
+**Financial-sector exemption:** for the 12 verified Industry Name categories below,
 Debt/Equity, Asset Turnover, and Capex Intensity are excluded entirely (a lender's
 leverage is its business model, not a risk flag), and their combined 35% weight
-redistributes to ROE (+17.5% → 32.5%) and EPS growth (+17.5% → 32.5%):
+redistributes to ROE (+17.5% → 32.5%) and EPS growth (+17.5% → 32.5%). The exemption
+also skips the −20 D/E>2.0 penalty, not just the 20% weighting — both are gated on the
+same flag:
 
 > Banks · Finance (including NBFCs) · Housing Finance · Microfinance Institutions ·
 > Financial Institutions · Asset Management Cos. · Capital Markets · Investment
-> Companies · General Insurance · Life Insurance · Other Financial Services
+> Companies · General Insurance · Life Insurance · Other Financial Services ·
+> **Holding Companies**
 
 *(This list was verified against real Company Master data, not assumed — a naive
 substring match on "housing" would have wrongly caught "Warehousing & Logistics";
 this was caught and corrected.)*
+
+**`Holding Companies` added 2026-09-06, after an audit of all 127 industry categories
+against the full universe found it missing.** The category holds Bajaj Finserv, Aditya
+Birla Capital, Cholamandalam Financial Holdings, JM Financial, Tata Investment
+Corporation, JSW Holdings and similar — financial firms that were being scored on D/E
+like operating companies. Three were measurably mis-scored in the loaded data:
+Cholamandalam Financial Holdings (D/E **13.61**), Aditya Birla Capital (5.21) and Bajaj
+Finserv (4.64) were each taking the −20 penalty *and* a bottom-percentile D/E score at
+20% weight. **This was a pre-existing defect, not one the universe expansion created** —
+6 such stocks were already in the 742-stock set. It also removes an inconsistency:
+`Investment Companies` was already exempt while its near-identical sibling category was
+not (Kalyani Investment Company exempt, BF Investment penalised). Coverage after the
+addition: **234 stocks, 10.9% of the universe.** Verified in the preview harness — all
+three now render the `*` financial-weighting marker; non-financial controls do not.
 
 **Hard penalty overrides:**
 - Debt/Equity > 2.0 (non-exempt stocks only): **–20 points**
@@ -457,7 +474,7 @@ and did *not* resolve at scale:
 
 | | Industry Name (granular) | sector_name (broad) |
 |---|---|---|
-| Categories | 127 | 29 |
+| Categories | 127 (125 after the REIT/InvIT removal) | 29 |
 | Smallest group | **1 stock** | 8 stocks |
 | Median group | 10 | 55 |
 | Under 5 constituents | **22 categories** | 0 |
@@ -850,8 +867,9 @@ For quick reference; each item traces to a fuller explanation above.
 
 ## 9. Open Items — Not Yet Resolved
 
-0. **Equity universe delivered and verified (2026-09-06)** — `meridian-company-master-2165.csv`,
-   2,165 stocks, converted from a Trendlyne extract. Deliberately larger than the eventual
+0. **Equity universe delivered and verified (2026-09-06)** — `meridian-company-master-2138.csv`,
+   2,138 stocks, converted from a Trendlyne extract (2,165 supplied, less 27 REITs/InvITs
+   removed — see below). Deliberately larger than the eventual
    universe: some will drop out on the §3.1 200-trading-day rule once history is fetched.
    Verified directly, not assumed:
    - **Integrity is clean.** 2,165 unique ISINs, zero duplicates, zero malformed, zero
@@ -868,7 +886,17 @@ For quick reference; each item traces to a fuller explanation above.
      matching on "housing" would still wrongly catch *Warehousing & Logistics*.
    - **164 stocks sit below ₹500 Cr market cap**, against the ">₹500 Cr" convention
      §3.1 cites. Not resolved either way; flagged rather than silently filtered.
-   - **Consequent work, still open:** 1,425 stocks have no price history at all. The
+   - **REITs and InvITs removed entirely (27 stocks), per explicit instruction.** They
+     are structurally leveraged pass-through vehicles for which D/E, Asset Turnover and
+     Capex Intensity are all conceptually wrong, and they are not the kind of instrument
+     this screen is for. Removed by *identity*, never by name pattern: the whole
+     `REITs-InvITs` category (25) plus the two genuine InvITs Trendlyne had filed under
+     `Others` (NDR InvIT Trust, Sustainable Energy Infra Trust). **Master Trust Ltd.**
+     and **The Investment Trust of India Ltd.** were deliberately kept — both are
+     operating financial companies whose names merely contain "Trust", the same class of
+     trap as the "housing"/"Warehousing" case in §4.2. This leaves 125 industry
+     categories, of which 120 have the 3+ constituents needed to form an index.
+   - **Consequent work, still open:** ~1,400 stocks have no price history at all. The
      full backfill (§3.4/§7.3) is the gating task before the wider universe is usable.
 1. ~~Precise Supabase storage-footprint calculation.~~ **Resolved (2026-09-05), against
    real data.** `prices_daily` dominates the footprint by a wide margin (fundamentals and
@@ -930,7 +958,7 @@ be the authoritative list of what belongs in the GitHub repository.
 
 | Type | File | What it is |
 |---|---|---|
-| Input | `meridian-company-master-2165.csv` | **The equity universe** — 2,165 stocks, delivered 2026-09-06 (§9). Carries both taxonomies plus NSE/BSE codes for Yahoo ticker routing |
+| Input | `meridian-company-master-2138.csv` | **The equity universe** — 2,138 stocks, delivered 2026-09-06 (§9). Carries both taxonomies plus NSE/BSE codes for Yahoo ticker routing |
 | Input | `meridian-company-master-742.csv` | Superseded as the universe definition, retained as the companion master to the 740-stock price history until the full backfill runs |
 | Input | `meridian-price-history-742.csv` | Real Equities price history (~67MB) |
 | Input | `meridian-fundamentals-742.csv` | Real Equities fundamentals |

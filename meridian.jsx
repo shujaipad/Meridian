@@ -317,6 +317,12 @@ const FINANCIAL_INDUSTRIES = new Set([
   "Banks", "Finance (including NBFCs)", "Housing Finance", "Microfinance Institutions",
   "Financial Institutions", "Asset Management Cos.", "Capital Markets", "Investment Companies",
   "General Insurance", "Life Insurance", "Other Financial Services",
+  // Added 2026-09-06. Holds Bajaj Finserv, Aditya Birla Capital, Cholamandalam Financial
+  // Holdings, JM Financial, Tata Investment Corp — financial firms that were being scored
+  // on D/E like operating companies (Chola Financial Holdings, D/E 13.61, was taking the
+  // full -20 penalty). Also removes an inconsistency: "Investment Companies" was already
+  // exempt while its near-identical sibling category was not.
+  "Holding Companies",
 ]);
 
 // Rank-based percentile, 0 (worst) to 100 (best). `invert` flips direction for metrics
