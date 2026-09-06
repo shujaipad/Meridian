@@ -1056,8 +1056,8 @@ be the authoritative list of what belongs in the GitHub repository.
 |---|---|---|
 | Input | `meridian-company-master-2138.csv` | **The equity universe** — 2,138 stocks, delivered 2026-09-06 (§9). Carries both taxonomies plus NSE/BSE codes for Yahoo ticker routing |
 | Input | `meridian-price-history-2090-part{1,2,3}of3.csv` | **The price history** — 5yr daily adjusted OHLCV, 2,140,635 rows, 2,089 instruments (~127MB, split three ways; see §10.3) |
-| Input | `meridian-company-master-742.csv` | Superseded. Retained only as the companion master to the original 742-stock history, which the published §4.3 backtest figures were computed against |
-| Input | `meridian-price-history-742.csv` | Superseded by the full backfill. Retained for reproducibility of the §4.3 backtest results |
+| Artifact | `meridian-company-master-742.csv` | Superseded by the 2,138-stock master. **Kept deliberately as a historical artifact** — the original pilot universe |
+| Artifact | `meridian-price-history-742.csv` | Superseded by the full backfill. **Kept deliberately as a historical artifact** — the dataset the original §4.3 figures were computed against, and the fixed reference the 2026-09-06 re-run reproduced exactly to prove the new engine sound |
 | Tooling | `fetch_prices.py` | The bulk historical fetcher (§3.4's one-time backfill and quarterly re-pull). Not the daily incremental job, which is separate engineering (§7.3) |
 | Tooling | `clean_price_calendar.py` | Strips phantom trading days (holiday bars from a few BSE tickers) that silently NaN out every rolling window. Must run after any bulk fetch — see §9 item 0a |
 | Input | `meridian-fundamentals-742.csv` | Real Equities fundamentals |
