@@ -126,11 +126,17 @@ const ASSET_CLASSES = {
   },
 };
 
-// ---------- Sectoral: synthetic equal-weighted price index per IndustryGroup ----------
+// ---------- Sectoral: synthetic equal-weighted price index per Industry Name ----------
 // Derived entirely from stock data already loaded — not a separate upload. Builds a
 // real, date-aligned synthetic price series per sector (not just a ranking, unlike the
 // earlier sector-RS-only version), so it can run through the full technical engine —
 // same MAs, same golden cross, same everything — exactly like a real instrument would.
+//
+// Grouped on the GRANULAR field (`Sector`, Trendlyne's 127-category "Industry Name"),
+// per an explicit 2026-09-06 decision that superseded the earlier choice of the broader
+// 29-category field. The thin-group risk that motivated the original choice is real and
+// measured — at 2,165 stocks, 6 categories have under 3 constituents — but it is handled
+// by the minimum-constituents guard below rather than by coarsening the whole taxonomy.
 function computeSectoralSeries(masterList, prices) {
   const priceByISIN = {};
   prices.forEach((r) => { (priceByISIN[r.ISIN] ||= []).push(r); });
@@ -138,7 +144,7 @@ function computeSectoralSeries(masterList, prices) {
 
   const bySector = {};
   masterList.forEach((m) => {
-    const g = m.IndustryGroup;
+    const g = m.Sector;
     const rows = priceByISIN[m.ISIN];
     if (!g || !rows || !rows.length) return;
     const byDate = {};
@@ -1688,7 +1694,7 @@ function SectoralScreen({ computed, accent }) {
   return (
     <div style={{ padding: "16px 24px 40px" }}>
       <div style={{ fontSize: 12, color: T.textDim, marginBottom: 16, lineHeight: 1.6 }}>
-        {computed.length} industry groups — each a synthetic, equal-weighted price index built entirely from your loaded Equities data, run through the same technical engine as any real instrument. Read-only; nothing to upload here.
+        {computed.length} industries — each a synthetic, equal-weighted price index built entirely from your loaded Equities data, run through the same technical engine as any real instrument. Industries with fewer than 3 constituents are excluded as too thin to average meaningfully. Read-only; nothing to upload here.
       </div>
       <div style={{ marginBottom: 12 }}>
         <div style={{ position: "relative", display: "inline-block" }}>
@@ -1702,7 +1708,7 @@ function SectoralScreen({ computed, accent }) {
           <thead style={{ position: "sticky", top: 0, zIndex: 15, background: T.bg }}>
             <tr style={{ borderBottom: `1px solid ${T.border}`, fontSize: 11, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.04em" }}>
               <th></th>
-              <th onClick={() => toggleSort("Name")} style={{ cursor: "pointer" }}>Industry Group</th>
+              <th onClick={() => toggleSort("Name")} style={{ cursor: "pointer" }}>Industry</th>
               <th onClick={() => toggleSort("CMP")} style={{ cursor: "pointer" }}>Index Level</th>
               <th onClick={() => toggleSort("changePct")} style={{ cursor: "pointer" }}>1D %</th>
               <th onClick={() => toggleSort("rsRating")} style={{ cursor: "pointer" }}>RS Rating</th>
@@ -2127,7 +2133,7 @@ export default function App() {
     const rsUniverseSector = computeRSUniverse(closesBySector);
     return sectorNames.map((name) => {
       const tech = computeTechnicalBlock(seriesBySector[name]);
-      return { ISIN: name, Name: name, Symbol: name, IndustryGroup: name, tech: tech ? { ...tech, rsRating: rsUniverseSector[name] || null } : tech, fund: null };
+      return { ISIN: name, Name: name, Symbol: name, Sector: name, tech: tech ? { ...tech, rsRating: rsUniverseSector[name] || null } : tech, fund: null };
     });
   }, [master, prices, needsSectoralCompute]);
   const sectoralBreakoutCandidates = useMemo(

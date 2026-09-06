@@ -39,7 +39,7 @@ color-accented for quick visual orientation:
 
 | Asset class | Sub-tabs | Data status |
 |---|---|---|
-| **Equities** | Stocks, Golden Breakout, Sectoral, Sectoral Breakout, Market Breadth | Real data: 742 of ~1,977 qualifying stocks; full-universe quarterly upload forthcoming (§3.1) |
+| **Equities** | Stocks, Golden Breakout, Sectoral, Sectoral Breakout, Market Breadth | Full universe delivered 2026-09-06: **2,165 stocks** (§9). Price history covers 740 of them; the other 1,425 await backfill |
 | **Commodities** | Base data, Golden Breakout | Real universe forthcoming (§3.2) |
 | **Currencies** | Base data, Golden Breakout | Real, verified universe (27 instruments, §9); accent teal (`#2DB9A3`), locked 2026-09-05 |
 | **Global Indices** | Base data, Golden Breakout | Real universe forthcoming (§3.2) |
@@ -172,10 +172,11 @@ oversight to silently carry forward.
 
 ### 3.3 Sectoral (Industry Pools)
 - **Not a separate data source.** A synthetic, equal-weighted price index built entirely
-  from already-loaded Equities data, grouped by the broader `IndustryGroup` field
-  (29 categories — see §4.4 for why this field was chosen over the more granular
-  127-category Industry Name field). Requires no independent maintenance; it is
-  recomputed whenever the underlying stock data changes.
+  from already-loaded Equities data, grouped by the **granular Industry Name** field
+  (127 categories, held in the `Sector` column — changed 2026-09-06 from the broader
+  29-category field; see §4.5 for the naming trap and the measured trade-off). Groups
+  with fewer than 3 constituents are excluded as too thin to average. Requires no
+  independent maintenance; it is recomputed whenever the underlying stock data changes.
 
 ### 3.4 Historical price sourcing
 - **One-time activity:** full historical backfill at initial setup.
@@ -429,13 +430,48 @@ simplification reasons as §4.3.4), Equities-only:
   snapshot — enabling the trend charts.
 
 ### 4.5 Classification field choices (verified against real data, not assumed)
-- **Stock-level classification:** Industry Name (127 categories) — used for the
-  financial-sector exemption list (§4.2) and general sector filtering.
-- **Sectoral / Industry Pool grouping:** the broader `IndustryGroup`/`sector_name`
-  field (29 categories) — deliberately **not** the 127-category field, because 24 of
-  those 127 categories have fewer than 5 constituent stocks in the real data (8 have
-  fewer than 3, 3 have exactly one) — too thin to form a meaningful synthetic index.
-  The 29-category field has a verified minimum group size of 7.
+
+**A note on the naming, because it is genuinely confusing and has caused one round of
+crossed wires already.** In both the source extract and the CSV schema, the column named
+`Sector` holds the **granular** Trendlyne "Industry Name" (127 categories: Banks,
+Pharmaceuticals, Agrochemicals…), while `IndustryGroup`/`sector_name` holds the **broad**
+roll-up (29 categories: Banking and Finance, Healthcare, Oil & Gas…). "Industry" is the
+fine-grained one; "sector" is the coarse one — the opposite of what the column names
+suggest.
+
+- **Stock-level classification:** Industry Name — the granular 127-category field, held
+  in the `Sector` column. Used for the financial-sector exemption list (§4.2) and
+  general filtering.
+- **Sectoral / Industry Pool grouping (changed 2026-09-06):** the **granular** Industry
+  Name field, per explicit instruction. This **supersedes** the original decision to
+  group on the broad 29-category field.
+
+**The original decision and why it was made** — retained because the evidence behind it
+is still valid and worth knowing: the broad field was chosen because 24 of the 127
+granular categories had fewer than 5 constituents in the 742-stock universe (8 under 3,
+3 with exactly one), too thin to average into a meaningful index; the broad field had a
+verified minimum group size of 7.
+
+**Re-measured against the full 2,165-stock universe (2026-09-06)** — the concern is real
+and did *not* resolve at scale:
+
+| | Industry Name (granular) | sector_name (broad) |
+|---|---|---|
+| Categories | 127 | 29 |
+| Smallest group | **1 stock** | 8 stocks |
+| Median group | 10 | 55 |
+| Under 5 constituents | **22 categories** | 0 |
+| Under 10 constituents | **63 categories** | 2 |
+
+Tripling the universe barely moved it (24-of-127 under 5 at 742 stocks; 22-of-127 at
+2,165) because the taxonomy subdivides as it grows. **The decision was taken anyway, with
+these numbers in view**, on the basis that granular industries are the more useful lens
+even if some are thin.
+
+**How the thin-group risk is handled instead:** `computeSectoralSeries` drops any group
+with **fewer than 3 constituents** (a guard that predates this change), so the two
+single-stock and four two-stock categories never form an index. Both taxonomies remain in
+the master CSV, so this is reversible without re-sourcing data.
 
 ---
 
@@ -772,7 +808,8 @@ For quick reference; each item traces to a fuller explanation above.
 - [x] Universe: user-defined ISINs, quarterly review, corporate-action-adjust-or-exclude
       gap policy, permanent hard delete on removal
 - [x] Commodities/Currencies/Indices/Crypto: static lists, manual on-demand maintenance
-- [x] Sectoral: derived compute on `IndustryGroup` (29-category field), not separately
+- [x] Sectoral: derived compute on the granular Industry Name field (127 categories, in
+      the `Sector` column; changed 2026-09-06 from the 29-category field), not separately
       maintained
 - [x] Daily price job: incremental + 60-day corporate-action reconciliation window
 - [x] Quarterly full re-pull retained as backup check, not redundant with daily job
@@ -813,6 +850,26 @@ For quick reference; each item traces to a fuller explanation above.
 
 ## 9. Open Items — Not Yet Resolved
 
+0. **Equity universe delivered and verified (2026-09-06)** — `meridian-company-master-2165.csv`,
+   2,165 stocks, converted from a Trendlyne extract. Deliberately larger than the eventual
+   universe: some will drop out on the §3.1 200-trading-day rule once history is fetched.
+   Verified directly, not assumed:
+   - **Integrity is clean.** 2,165 unique ISINs, zero duplicates, zero malformed, zero
+     nulls in any field except the two exchange codes (where absence is meaningful).
+   - **Exchange split:** 1,728 dual-listed, 128 NSE-only, 309 BSE-only, none unlisted.
+     So **1,856 route to Yahoo as `SYMBOL.NS` and 309 must fall back to `<bsecode>.BO`** —
+     14% of the universe would silently fail a fetcher that only tried NSE. `BSE Code`
+     arrives as a float and needs an int cast before forming a ticker.
+   - **Versus the previous 742:** 740 carried over, 1,425 new, and 2 dropped
+     (TD Power Systems `INE419M01027`, Kirloskar Pneumatic `INE811A01020` — worth a
+     glance if unintended).
+   - **§4.2's financial exemption re-verified:** all 11 locked categories present,
+     covering 220 stocks (10.2%). The documented naive-substring trap is still live —
+     matching on "housing" would still wrongly catch *Warehousing & Logistics*.
+   - **164 stocks sit below ₹500 Cr market cap**, against the ">₹500 Cr" convention
+     §3.1 cites. Not resolved either way; flagged rather than silently filtered.
+   - **Consequent work, still open:** 1,425 stocks have no price history at all. The
+     full backfill (§3.4/§7.3) is the gating task before the wider universe is usable.
 1. ~~Precise Supabase storage-footprint calculation.~~ **Resolved (2026-09-05), against
    real data.** `prices_daily` dominates the footprint by a wide margin (fundamentals and
    universe tables are trivial even at full scale). Using the real 742-stock price file
@@ -873,7 +930,8 @@ be the authoritative list of what belongs in the GitHub repository.
 
 | Type | File | What it is |
 |---|---|---|
-| Input | `meridian-company-master-742.csv` | Real Equities master data |
+| Input | `meridian-company-master-2165.csv` | **The equity universe** — 2,165 stocks, delivered 2026-09-06 (§9). Carries both taxonomies plus NSE/BSE codes for Yahoo ticker routing |
+| Input | `meridian-company-master-742.csv` | Superseded as the universe definition, retained as the companion master to the 740-stock price history until the full backfill runs |
 | Input | `meridian-price-history-742.csv` | Real Equities price history (~67MB) |
 | Input | `meridian-fundamentals-742.csv` | Real Equities fundamentals |
 | Input | `meridian-commodities-master.csv` | Real, verified universe (27 instruments) — `-prices-sample.csv` remains synthetic, real price history not yet sourced |
