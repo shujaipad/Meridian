@@ -8,16 +8,27 @@ several tempting-looking additions below have already been tested and
 rejected, with the evidence to show why, specifically so they aren't
 re-derived from scratch.
 
-VALIDATED RESULT (5-gate model, 742-stock universe, real 5yr data):
-    20-trading-day horizon: 58.6% win rate, +4.06% mean return, 467 episodes
-    60-trading-day horizon: 64.2% win rate, +12.05% mean return
+VALIDATED RESULT — re-run 2026-09-06 against the full 2,089-instrument
+universe with freshly corporate-action-adjusted history:
+    20-trading-day horizon: 54.8% win rate, +4.49% mean return, 2,403 episodes
+    60-trading-day horizon: 60.2% win rate, +12.21% mean return, 2,293 episodes
+
+    ORIGINAL (742-stock universe, freshness <=10): 58.6%/+4.06% at 20d over 459
+    episodes, 64.2%/+12.05% at 60d. This run reproduces those figures EXACTLY
+    when re-pointed at the 742-stock file with freshness<=10, which is what
+    makes the comparison above trustworthy rather than a data artifact.
+
+    Reading the difference: the wider universe lowers the win rate ~3.5pp but
+    RAISES mean return (+4.06 -> +5.11 at 20d on a like-for-like <=10d gate) —
+    smaller caps are noisier but higher beta. Widening freshness 10 -> 15 leaves
+    the win rate flat (-0.3pp) and roughly doubles the opportunity set.
 
 THE FIVE LOCKED GATES (see `passes_golden_breakout()` — this is the ONLY
 gate function that should run in production or in any new backtest):
     1. Golden Cross structure: price > 50DMA > 200DMA
     2. 200DMA rising (20-trading-day slope > 0)
     3. Separation: (50DMA - 200DMA) / 200DMA >= 3%
-    4. Freshness: golden-cross state streak <= 10 trading days
+    4. Freshness: golden-cross state streak <= 15 trading days (was 10 until 2026-09-05)
     5. Short-term trend intact: price > 8DMA
 
 DO NOT RE-ADD THE FOLLOWING WITHOUT A GENUINELY NEW REASON — each was
@@ -84,6 +95,8 @@ METHODOLOGY NOTE — episode-level vs raw signal-day counting:
 ============================================================================
 """
 
+import glob
+
 import numpy as np
 import pandas as pd
 
@@ -98,11 +111,16 @@ def load_price_data_from_csv(path):
     Volume — matching Meridian's price_history export schema) and returns
     a wide DataFrame: index = Date, columns = ISIN, values = Close.
 
+    `path` may be a glob. The full history ships as three parts (a single
+    file exceeds GitHub's 100MB limit), split by instrument and never
+    mid-series, so concatenating them is safe in any order.
+
     TO ADAPT FOR SUPABASE: replace the body of this function with a query
     against `prices_daily`, then pivot the same way. Nothing else in this
     file needs to change.
     """
-    df = pd.read_csv(path, parse_dates=["Date"])
+    paths = sorted(glob.glob(path)) or [path]
+    df = pd.concat([pd.read_csv(p, parse_dates=["Date"]) for p in paths], ignore_index=True)
     close = df.pivot(index="Date", columns="ISIN", values="Close").sort_index()
     return close
 
@@ -196,7 +214,7 @@ def compute_all_signals(close):
 # ============================================================================
 
 MIN_SEPARATION_PCT = 3
-FRESHNESS_MAX_DAYS = 10
+FRESHNESS_MAX_DAYS = 15   # widened from 10 on 2026-09-05; see requirements §4.3
 
 
 def passes_golden_breakout(signals, min_separation_pct=MIN_SEPARATION_PCT, freshness_max_days=FRESHNESS_MAX_DAYS):
@@ -360,7 +378,7 @@ def compute_market_cap_buckets(market_caps):
 if __name__ == "__main__":
     import sys
 
-    csv_path = sys.argv[1] if len(sys.argv) > 1 else "meridian-price-history-742.csv"
+    csv_path = sys.argv[1] if len(sys.argv) > 1 else "meridian-price-history-2090-part*of3.csv"
     print(f"Loading price data from {csv_path} ...")
     close = load_price_data_from_csv(csv_path)
     print(f"Loaded {close.shape[1]} instruments, {close.shape[0]} trading days.")

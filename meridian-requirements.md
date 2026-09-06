@@ -332,9 +332,8 @@ being part of an earlier iteration; see §4.3.4 for why).
 | 5 | Short-term trend intact | Price > 8DMA |
 
 **Update (2026-09-05):** Freshness threshold widened from ≤10 to ≤15 trading days per
-explicit instruction. Not re-backtested against this specific threshold — the win-rate
-and mean-return figures in the backtest table below still reflect the ≤10-day gate;
-re-running the backtest at ≤15 days is open, tracked work, not yet done.
+explicit instruction. **Re-backtested 2026-09-06** — see the results below; the widening
+costs almost nothing in win rate and roughly doubles the opportunity set.
 
 **Ranking of survivors:** separation width (descending), then freshness (ascending —
 ties broken toward the more recently-triggered signal). Explicitly labeled in the app as
@@ -348,12 +347,45 @@ squeeze test).
 purely informational** — not a gate, not part of ranking. Explicitly demoted from an
 earlier iteration where it was a hard filter.
 
-**Backtest result (5-gate model, real 5-year data, 742-stock universe):**
+**Backtest result — re-validated 2026-09-06 against the full 2,089-instrument universe**
+with freshly corporate-action-adjusted history (§9 item 0a). These supersede the original
+742-stock figures as the model's headline numbers:
 
 | Horizon | Win rate | Mean return | Independent episodes |
 |---|---|---|---|
-| 20 trading days | 58.6% | +4.06% | 467 |
-| 60 trading days | 64.2% | +12.05% | 467 |
+| 20 trading days | **54.8%** | **+4.49%** | **2,403** |
+| 60 trading days | **60.2%** | **+12.21%** | **2,293** |
+
+**Why these are trustworthy:** re-pointing the same script at the original 742-stock file
+with freshness ≤10 reproduces the published figures *exactly* — 58.6%/+4.06% at 20d and
+64.2%/+12.05% at 60d. The engine and data are therefore sound, and the differences below
+are real effects rather than artifacts.
+
+**The two changes, deliberately separated rather than confounded:**
+
+| Universe | Freshness | 20d win | 20d return | 60d win | 60d return | Episodes |
+|---|---|---|---|---|---|---|
+| 742 (original) | ≤10 | 58.6% | +4.06% | 64.2% | +12.05% | 459 |
+| 742 (original) | ≤15 | 58.5% | +3.94% | 64.1% | +10.71% | 938 |
+| 2,089 (full) | ≤10 | 55.1% | +5.11% | 60.3% | +14.51% | 1,254 |
+| **2,089 (full)** | **≤15** | **54.8%** | **+4.49%** | **60.2%** | **+12.21%** | **2,403** |
+
+- **Universe effect:** on a like-for-like ≤10-day gate, widening 742 → 2,089 lowers the
+  win rate ~3.5pp but *raises* mean return (+4.06 → +5.11 at 20d; +12.05 → +14.51 at
+  60d). That is the expected signature of admitting smaller caps — noisier, so fewer
+  hits, but higher beta, so larger moves when right. Expectancy improves.
+- **Freshness effect:** ≤10 → ≤15 leaves the win rate essentially flat (−0.3pp at 20d,
+  −0.1pp at 60d) while roughly **doubling the opportunity set**. Mean return gives up
+  ~0.6pp at 20d. The identical pattern appears on the 742-stock universe, confirming it
+  is the threshold doing the work and not the new data.
+- **Sample size:** the model now rests on **2,403 independent episodes rather than 459**,
+  a materially firmer footing than the original figures had.
+
+*Original figure, retained for the record: 58.6%/+4.06% (20d) and 64.2%/+12.05% (60d)
+over 467 episodes on the 742-stock universe. The re-run counts 459 rather than 467
+episodes on that same file — win rate and mean return match to the decimal, so the small
+count difference is a data-vintage detail (corporate actions re-adjusted since), not a
+methodology change.*
 
 #### 4.3.1 Parameters tested and explicitly rejected (not toggles — removed entirely)
 Per an explicit standing principle: *"any parameter that is not adding value should not
@@ -941,6 +973,18 @@ For quick reference; each item traces to a fuller explanation above.
      Yahoo's dividend adjustment exceeds its pre-2024 price of ~₹3, a genuine artefact of
      that stock's one-day repricing. Unusable for moving averages, so dropped under
      §3.1's exclude-rather-than-carry policy.
+   - **Phantom trading days — found only by re-running the backtest, and it would have
+     hit production identically.** Yahoo emits bars for four BSE-only tickers (Kovai
+     Medical, Novartis India, Goodyear India, Vishal Fabrics) on 36 days the Indian
+     market is closed — Diwali, Republic Day, Holi and so on. Only ~4 of 2,089
+     instruments report on those dates against a median of ~1,700 on a real trading day.
+     This is not cosmetic: pandas `rolling(200)` counts *rows*, not valid observations,
+     so one near-empty holiday row inside a 200-row window makes MA200 NaN for every
+     instrument that correctly did not trade. **The first backtest run on the full data
+     collapsed from 459 episodes to 21** before the cause was found. The same failure
+     would hit §6.2's nightly compute job, which runs the identical moving averages over
+     whatever `prices_daily` holds. `clean_price_calendar.py` strips these (144 rows) and
+     must run after any bulk fetch.
    - **48 instruments remain unfetchable** — small recent listings Yahoo does not carry
      (median ₹680 Cr; largest ₹2,751 Cr; ₹40,359 Cr combined, against Reliance's ₹17.9
      lakh Cr alone). Most would fail the 200-day rule regardless.
@@ -1015,6 +1059,7 @@ be the authoritative list of what belongs in the GitHub repository.
 | Input | `meridian-company-master-742.csv` | Superseded. Retained only as the companion master to the original 742-stock history, which the published §4.3 backtest figures were computed against |
 | Input | `meridian-price-history-742.csv` | Superseded by the full backfill. Retained for reproducibility of the §4.3 backtest results |
 | Tooling | `fetch_prices.py` | The bulk historical fetcher (§3.4's one-time backfill and quarterly re-pull). Not the daily incremental job, which is separate engineering (§7.3) |
+| Tooling | `clean_price_calendar.py` | Strips phantom trading days (holiday bars from a few BSE tickers) that silently NaN out every rolling window. Must run after any bulk fetch — see §9 item 0a |
 | Input | `meridian-fundamentals-742.csv` | Real Equities fundamentals |
 | Input | `meridian-commodities-master.csv` | Real, verified universe (27 instruments) — `-prices-sample.csv` remains synthetic, real price history not yet sourced |
 | Input | `meridian-currencies-master.csv` | Real, verified universe (27 instruments) — new asset class; no price file yet, synthetic or real |

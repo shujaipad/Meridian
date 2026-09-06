@@ -4,3 +4,5 @@ node_modules/
 preview/prices-trim.csv
 preview/shots/
 *.log
+__pycache__/
+*.pyc
