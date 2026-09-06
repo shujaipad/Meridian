@@ -1191,7 +1191,196 @@ reads all three transparently.
 
 ---
 
-## 11. Source of Truth for Code
+## 11. Code Map — every function, what it does, and the order it runs in
+
+Written for someone opening this repository cold. Functions are listed in **call
+order**, not alphabetically, because the sequence is the thing that's hard to
+reconstruct from the files themselves.
+
+Five bundles, and it's worth being clear which are load-bearing:
+
+| Bundle | Role | Ships to users? |
+|---|---|---|
+| `meridian-engine.js` | Every pure computation. The actual IP | Yes — and the pipeline imports it too |
+| `meridian.jsx` | React UI, storage, sample data | Yes |
+| `meridian_backtest.py` | Independent Python implementation, for validation | No |
+| `fetch_prices.py`, `clean_price_calendar.py`, `check_data_integrity.py` | Data acquisition and guards | No |
+| `verify_port.*`, `preview/` | Proof and inspection harnesses | No |
+
+### 11.1 `meridian-engine.js` — the computation engine
+
+The only file where the model actually lives. No React, no DOM, no
+`window.storage` — plain functions over plain arrays, which is what lets the
+browser and the Node pipeline import *the same module* rather than each holding
+a copy (§6.2).
+
+**Entry point.** `computeAll(master, fundamentals, prices)` is what callers
+actually invoke. It buckets the flat price and fundamentals arrays by ISIN, then
+per stock calls `computeFundamentalBlock` and `computeTechnicalBlock`, returning
+`{...master, fund, tech}` per row. Everything below is reached through it, except
+the population-level functions (RS, breadth, sectoral, the screener) which need
+the whole universe at once and so are called separately afterwards.
+
+**Per-instrument technicals** — `computeTechnicalBlock(priceRows)` is the busiest
+function in the codebase and produces most of what the Stocks screen shows:
+
+| Function | Does |
+|---|---|
+| `rollingSMASeries(closes, n)` | n-period SMA as a full series, `null` until enough bars. Called for every MA period the app displays |
+| `computeRSI(closes, period=14)` | Wilder-smoothed RSI |
+| `maAbove(a, b)` | **Read this one.** `a > b` with a relative tolerance (`MA_TIE_EPSILON = 1e-9`). Two MAs are *mathematically equal* whenever price is flat across both windows, and a bare `>` then resolves on floating-point noise — which is how a freshness streak came out 195 days in JS and 4 in Python (§9 item 0b) |
+| `streakFromStateSeries(series, maxLookback=750)` | Walks backwards counting consecutive identical states. Returns `{value, streak, capped}`; `capped` marks a streak that hit the lookback wall rather than a real flip |
+| `avg(arr)` | Mean, `null` on empty. Used throughout |
+
+It emits: `cmp`, `changePct`, `mas` (per period), `sSignals`/`sStreaks`
+(price-vs-MA), `mSignals`/`mStreaks` (MA-vs-MA), `rsi`, `volBreakoutPct`,
+`ma200SlopePct` / `ma200Rising`, `goldenCrossState` / `goldenCrossStreak`,
+`separationPct`, and the raw `closes`/`dates` (exposed deliberately, so
+population-level functions don't re-parse).
+
+**Per-instrument fundamentals**
+
+| Function | Does |
+|---|---|
+| `computeFundamentalBlock(fundRows)` | Turns per-FY rows into 3-year averages, mean YoY growth (**not CAGR** — §4.2), latest-year values, `cwipPct`, `epsLatest` |
+| `flagFor(lastYr, avg3, invert)` | Classifies latest-vs-3yr-average as improving/deteriorating for the UI arrows |
+
+**Population-level — must run over the whole universe, after `computeAll`**
+
+| Function | Does |
+|---|---|
+| `closesByKeyFromPrices(rows, keyField)` | Pivots flat price rows into `{id: [closes]}`. The input shape for everything below |
+| `rawRSScoreAsOf(closes, daysAgo)` | The weighted 63/126/189/252-day performance score (`RS_COMPONENTS` holds the 40/20/20/20 weights) |
+| `computeRSUniverse(closesById, maxLookbackDays=500)` | Percentile-ranks those raw scores into 1–99 **against the loaded population**, for today and historically — which is why RS shifts when the universe changes |
+| `bandOfRSRating(rating)` | Red <60 / Amber 60–79 / Green ≥80 |
+| `percentileRank0to100(pairs, invert)` | Generic rank-to-percentile; `invert` for metrics where lower is better (D/E) |
+| `computeFundamentalScores(stocks)` | The 7-factor Composite Score and quintile tiers. Holds the `FINANCIAL_INDUSTRIES` exemption — for those 12 categories D/E, Asset Turnover and Capex are dropped entirely *and* the −20 D/E penalty is skipped (§4.2) |
+| `computeSectoralSeries(masterList, prices)` | Builds a synthetic equal-weighted index per **Industry Name** (§4.5), skipping groups under 3 constituents. Output is shaped like real price rows, so it feeds straight back into `computeTechnicalBlock` |
+| `computeBreadthSeries(stockList, closesById, lookbackDays=500)` | Walks all history to produce % above 200DMA plus new-high/new-low counts as a time series, not a snapshot |
+
+**The model itself**
+
+| Function | Does |
+|---|---|
+| `passesGoldenBreakout(stock, params)` | The five gates, in order, against `GOLDEN_BREAKOUT_PARAMS` (`minSeparationPct: 3`, `freshnessMaxDays: 15`). **The single place the model is defined** |
+| `rankGoldenBreakoutCandidates(candidates)` | Sorts survivors by separation desc, then freshness asc. Presentation only — §4.3 found no predictive edge among survivors |
+| `runGoldenBreakoutScreener(computedStocks, params)` | Filter, then rank. What the screens call |
+
+### 11.2 `meridian.jsx` — UI, storage, sample data
+
+Everything left after the engine was extracted. Nothing here computes a signal.
+
+- **Storage** — `saveChunkedArray` / `loadChunkedArray` / `deleteChunkedArray` /
+  `verifyChunkedArraySaved`. Splits large arrays across many keys because
+  `window.storage` caps each at ~5MB. Artifact-environment only; production reads
+  Supabase instead, so none of this survives the migration.
+- **Sample data** — `seededRandom`, `genSamplePrices`, `genSampleFundamentals`.
+  Deterministic synthetic data for the demo button. Never real.
+- **Formatting** — `fmtCr` (₹ crore, Indian digit grouping), `fmtNum`, `fmtPct`,
+  `pluralizeLower` (the consonant-y rule plus `index → indices`).
+- **Alerts** — `quarterEndsForYear`, `nextQuarterEndOnOrAfter`, `advanceDueDate`,
+  `todayStr`. Drive the quarterly-review reminders; §5 notes these only fire when
+  the app is opened, which production replaces with real email.
+- **Filtering** — `matchesMASignals` plus the `NumFilterPopover` /
+  `MASignalFilterPopover` components.
+- **Screens** — `GoldenBreakoutScreen`, `SectoralScreen`, `MarketBreadthScreen`,
+  `AlertsPanel`, and the config-driven `GenericAssetScreen` /
+  `GenericGoldenBreakoutScreen` pair shared by the four non-equity classes.
+- **Badges** — `FlagBadge`, `RSRatingBadge`, `FundTierBadge`, `SignalPill`,
+  `FundRow`.
+
+### 11.3 `meridian_backtest.py` — the independent implementation
+
+Deliberately a *separate* implementation, not a port. Its value is that it can
+disagree — and it has (§9 item 0b).
+
+Sequence: `load_price_data_from_csv` (accepts the three-part glob, pivots to a
+wide Date × ISIN frame) → `compute_all_signals` → `passes_golden_breakout` →
+`run_backtest` → `print_results`.
+
+| Function | Note |
+|---|---|
+| `rolling_sma(close, n)` | **Not** a plain `.rolling(n)` on the grid. Drops NaNs per column first, so an instrument's MA spans its own last n bars — matching the JS engine. The grid version silently dropped any stock with a missing bar |
+| `ma_above(a, b)` | Mirrors `maAbove`, same `MA_TIE_EPSILON` |
+| `compute_200dma_slope`, `compute_golden_cross_state_and_streaks`, `compute_separation_pct` | Python equivalents of the engine's internals. The streak version counts over each instrument's own bars, not grid rows |
+| `run_backtest(signal, close, horizons)` | Forward returns at 20/60 days, reported both raw and episode-level. **Episode-level is primary** — raw signal-days overstate sample size because streaks persist |
+
+**Preserved but not called** — `compute_rs_rating`,
+`compute_bollinger_squeeze_percentile_CORRECTED`,
+`compute_atr_contraction_percentile`, `compute_market_cap_buckets`. Each was
+tested and rejected (§4.3.1). They are kept so the rejections can be
+*re-verified*, not so they can be quietly re-enabled. The Bollinger one carries
+the corrected formula whose earlier buggy version pointed the wrong way.
+
+### 11.4 Data acquisition and guards
+
+**`fetch_prices.py`** — the §3.4 bulk backfill and quarterly re-pull. `main()`
+loads the universe, skips ISINs already written (so an interrupted run resumes),
+and per instrument calls `tickers_for` → `fetch`.
+
+- `tickers_for(row)` returns **four** candidates in priority order —
+  `NSECode.NS`, `BSECode.BO`, `Symbol.NS`, `Symbol.BO`. Not two, because Yahoo's
+  BSE symbols are sometimes numeric and sometimes alphabetic, and the source
+  extract leaves NSE Code blank for stocks that *are* NSE-listed. The extra two
+  recovered 305 of 353 initial failures.
+- `fetch(ticker)` handles 429 backoff and retries, and **takes the price from
+  `adjclose`, not `close`**, scaling High/Low by the same per-bar ratio. Yahoo's
+  `close` is unadjusted; using it would corrupt every MA-based signal (§3.5).
+  Returns `(rows, note)` so failures are logged per instrument rather than
+  swallowed.
+
+**`clean_price_calendar.py`** — strips dates where under 5% of instruments
+report. Yahoo emits holiday bars for a few BSE tickers, and since `rolling(200)`
+counts rows, one near-empty row NaNs out MA200 for every stock that correctly
+didn't trade. **Must run after any bulk fetch.**
+
+**`check_data_integrity.py`** — `check(name, ok, detail)` collects failures and
+exits non-zero. Every assertion corresponds to a bug that actually happened:
+float-contaminated BSE codes, phantom trading days, non-positive adjusted prices,
+duplicate keys, malformed ISINs, orphaned price rows, REITs re-entering.
+
+### 11.5 Proof and inspection harnesses
+
+**`verify_port.mjs` + `verify_port.py`** — the parity check. The Node side runs
+the real engine and emits today's candidate set as JSON (`parseCSV` is a small
+RFC4180-ish parser, needed because 75 master rows carry quoted fields with
+embedded commas); the Python side diffs it against its own implementation and
+exits non-zero on any divergence. Runs in CI.
+
+**`preview/`** — `trim-prices.mjs` cuts the history to the last 320 bars per
+instrument (enough for every live signal: RS needs 252, the 200DMA slope 220) so
+a browser can parse it; `capture.mjs` drives the uploads and screenshots every
+screen; `src/main.jsx` shims `window.storage` in memory.
+
+### 11.6 The sequence, end to end
+
+**Today (manual):** upload CSVs → `computeAll` → `computeRSUniverse` →
+`computeFundamentalScores` → screens render; Sectoral and Breadth computed lazily
+when their tabs open.
+
+**In production (§6.3), the same engine, different edges:**
+
+```
+fetch_prices.py  →  clean_price_calendar.py  →  check_data_integrity.py
+                 ↓
+        prices_daily / fundamentals_annual  (Supabase)
+                 ↓
+   Node job imports meridian-engine.js unchanged:
+     computeAll → computeRSUniverse → computeFundamentalScores
+                → computeSectoralSeries → computeBreadthSeries
+                → runGoldenBreakoutScreener
+                 ↓
+   staging tables → single-transaction swap (§6.3)
+                 ↓
+        Meridian reads the results. It computes nothing.
+```
+
+The engine is identical in both. Only what feeds it and what consumes it changes
+— which is the whole point of §6.2, and what `verify_port` exists to keep honest.
+
+---
+
+## 12. Source of Truth for Code
 
 `meridian.jsx` in this repository is the current, authoritative application source —
 read it directly rather than a copy. This document covers the *why* (vision, validated

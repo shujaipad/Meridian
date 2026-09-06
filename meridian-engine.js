@@ -564,11 +564,6 @@ export function computeBreadthSeries(stockList, closesById, lookbackDays = 500) 
   }));
 }
 
-// ---------- Breakout Screener: Stage A funnel + Stage B ranking, per bucket ----------
-// Every threshold and gate here is a toggleable setting, not a hardcoded rule — this
-// backtested as genuinely inconclusive on the current 742-stock sample (sector RS +
-// regime adjustment showed no reliable improvement over the simpler universe-wide RS
-// version), so the design needs to stay easy to flip back or retune as more data arrives.
 // ---------- Golden Breakout Model ----------
 // Five gates, every one backtested and validated against 5 years of real price history
 // (no toggles — parameters that didn't earn their place through evidence were removed
