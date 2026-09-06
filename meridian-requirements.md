@@ -118,6 +118,10 @@ gap was explicitly flagged during the build and has not yet been closed — brin
 current with the dashboard's present state is real, scoped, not-yet-done work, not an
 oversight to silently carry forward.
 
+**Now tracked as §9 item 8**, with a verified inventory of exactly what the workbook has,
+what it lacks, and the one thing in it that is actively wrong rather than merely absent
+(its financial-sector exemption list is a category short since 2026-09-06).
+
 ### 2.3 Known limitations of the current (artifact) implementation
 - **Hard storage ceiling.** Client-side artifact storage caps at **20MB total**, across
   all data combined. The real Equities price history alone is ~127MB as stored data
@@ -1086,6 +1090,41 @@ For quick reference; each item traces to a fuller explanation above.
 7. **PostHog event instrumentation is not yet scoped.** Which specific actions get
    tracked (which tabs, which interactions) beyond the automatic visitor/time-on-site
    metrics has not been defined — a real, small design task, not just a config setting.
+8. **The Excel workbook is well behind the dashboard, and the gap is now wide.** §2.2
+   flagged this when the divergence was the Golden Breakout redesign and the multi-asset
+   framework; everything since has widened it further. Verified against
+   `meridian-sample.xlsx` directly rather than assumed:
+
+   **What it still has, and correctly:** the full technical block (CMP, MA3–MA200, RSI14,
+   S/M signal columns, 52-week high/low, Vol Breakout %, MA200 Slope% and Rising), the
+   complete fundamentals block with per-metric percentiles, `Fund Score` and `Fund Tier`,
+   and the `FinExempt` flag — 74 Screener columns, every one a live formula.
+
+   **What it lacks entirely:**
+   - **The Golden Breakout model.** It carries the *inputs* (MA200 slope, Vol Breakout %)
+     but has no golden-cross state, streak or separation column, and none of the five
+     gates. The headline signal of the product is absent.
+   - **Sectoral** indices and **Market Breadth**.
+   - **The multi-asset structure** — Equities only; no Commodities, Currencies, Global
+     Indices or Crypto.
+
+   **What is now actively wrong rather than merely missing:**
+   - **`FinExempt` enumerates 11 categories and omits `Holding Companies`** (verified by
+     reading the formula). It would therefore mis-score Bajaj Finserv, Aditya Birla
+     Capital and Cholamandalam Financial Holdings exactly as the app did before the
+     2026-09-06 fix (§4.2).
+   - **Sectoral grouping**, if added, must use the granular Industry Name field per the
+     2026-09-06 change (§4.5) — the workbook predates that decision entirely.
+   - It holds **6 sample stocks**, not the 2,138-stock universe.
+   - A vestigial **`Benchmark Price History`** sheet survives from the pre-locked design
+     in which RS was benchmark-relative; §4.1 dropped that for population-relative
+     ranking, so the sheet is dead weight.
+
+   **Not scheduled.** Bringing it current is real, scoped work that has never been
+   started, and it grows every time the dashboard moves. Worth an explicit decision at
+   some point on whether the workbook remains a live deliverable (§2.2 scoped it as one
+   from the outset) or is retired — because a board-shareable artefact that silently
+   disagrees with the app on which stocks are financials is worse than not having one.
 
 ---
 
