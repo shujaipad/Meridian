@@ -1017,6 +1017,22 @@ A true daily incremental job needs a fundamentally different design:
 - **Idempotent writes** (upsert by ISIN+Date), not blind append.
 - The 60-trading-day corporate-action reconciliation window (§3.5) layered on top.
 
+**Decided 2026-09-07: nothing fetches until the accounts exist.** The repository holds a
+static snapshot as of 2026-09-04, and it goes one trading day more stale each day until
+the pipeline is live — including the workbook, which is one dated build of a thing
+designed to become daily. That is accepted rather than worked around.
+
+A scheduled GitHub Action committing prices back to the repository was considered as a
+way to close the gap sooner, since it needs no accounts at all, and **rejected**:
+GitHub-hosted cron is unreliable on timing under load, and committing a 127 MB dataset
+nightly would bloat the repository badly. It stays available as a fallback if account
+setup drags on for weeks, but the VPS is the intended home and waiting is cheaper than
+building a throwaway.
+
+The daily job is the **first thing to build once Supabase and the VPS exist** — before
+any frontend work, because everything downstream reads from it. It is the last genuinely
+unbuilt piece of the pipeline.
+
 ---
 
 ## 8. Explicitly Locked Decisions — Consolidated Checklist
