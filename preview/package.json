@@ -7,7 +7,8 @@
   "scripts": {
     "trim": "node trim-prices.mjs",
     "dev": "vite",
-    "capture": "node capture.mjs"
+    "capture": "node capture.mjs",
+    "check:asof": "node check-as-of.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.548.0",

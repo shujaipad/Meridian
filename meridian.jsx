@@ -14,7 +14,10 @@ import {
   computeRSUniverse,
   computeSectoralSeries,
   computeTechnicalBlock,
+  formatAsOfDDMMYYYY,
+  latestPriceDate,
   runGoldenBreakoutScreener,
+  stalePriceCount,
 } from "./meridian-engine.js";
 
 // ---------- Design tokens ----------
@@ -230,6 +233,31 @@ function pluralizeLower(word) {
   return `${w}s`;
 }
 
+// "prices as on DD-MM-YYYY" — the date of the newest bar actually loaded, so the
+// reader is never guessing whether they are looking at today's close or last
+// Friday's. Sourced from the data itself, never from the clock: on a day the
+// pipeline has not run, the honest answer is yesterday's date, not today's.
+function priceAsOfSummary(prices) {
+  const iso = latestPriceDate(prices);
+  return { iso, stale: iso ? stalePriceCount(prices) : 0 };
+}
+
+function PricesAsOn({ asOf, accent }) {
+  const { iso, stale } = asOf || {};
+  if (!iso) return null;
+  return (
+    <span
+      title={stale > 0
+        ? `${stale} instrument${stale === 1 ? "" : "s"} have no bar on this date — their latest data is older`
+        : "Date of the newest price bar loaded"}
+      style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: T.textDim, whiteSpace: "nowrap" }}
+    >
+      prices as on <span style={{ color: accent || T.text, fontWeight: 600 }}>{formatAsOfDDMMYYYY(iso)}</span>
+      {stale > 0 && <span style={{ color: T.loss, marginLeft: 5 }}>· {stale} lagging</span>}
+    </span>
+  );
+}
+
 function FlagBadge({ flag }) {
   if (!flag) return <span style={{ color: T.textDim }}>—</span>;
   const map = {
@@ -351,7 +379,7 @@ function NumFilterPopover({ colKey, label, current, onApply, onClear, onClose })
 // A lightweight sibling to GenericAssetScreen — reads the SAME persisted storage (so it
 // stays in sync with whatever's loaded on the base data tab without sharing React state),
 // computes technicals + RS, and runs the Golden Breakout screener against it.
-function GenericGoldenBreakoutScreen({ config }) {
+function GenericGoldenBreakoutScreen({ config, onAsOf }) {
   const [master, setMaster] = useState([]);
   const [prices, setPrices] = useState([]);
 
@@ -365,6 +393,12 @@ function GenericGoldenBreakoutScreen({ config }) {
       } catch (e) { /* no saved data yet */ }
     })();
   }, [config.storagePrefix]);
+
+  // Report freshness up to the global header, which sits above the asset-class tabs
+  // and so cannot read this component's price state directly. Keyed by class, because
+  // each one is loaded independently and they will not share an as-of date.
+  const asOf = useMemo(() => priceAsOfSummary(prices), [prices]);
+  useEffect(() => { onAsOf?.(asOf); }, [asOf, onAsOf]);
 
   const closesById = useMemo(() => closesByKeyFromPrices(prices, "ISIN"), [prices]);
   const rsUniverse = useMemo(() => computeRSUniverse(closesById), [closesById]);
@@ -382,7 +416,7 @@ function GenericGoldenBreakoutScreen({ config }) {
   return <GoldenBreakoutScreen candidates={candidates} accent={config.accent} hasFundamentals={false} itemLabel={config.labelSingular.charAt(0).toUpperCase() + config.labelSingular.slice(1)} />;
 }
 
-function GenericAssetScreen({ config }) {
+function GenericAssetScreen({ config, onAsOf }) {
   const { key, label, labelSingular, accent, storagePrefix, extraMasterFields, sampleMaster, samplePrices } = config;
   const [master, setMaster] = useState([]);
   const [prices, setPrices] = useState([]);
@@ -412,6 +446,11 @@ function GenericAssetScreen({ config }) {
       } catch (e) { /* no saved data yet */ }
     })();
   }, [storagePrefix]);
+
+  // Report freshness up to the global header, which sits above the asset-class tabs
+  // and so cannot read this component's price state directly.
+  const asOf = useMemo(() => priceAsOfSummary(prices), [prices]);
+  useEffect(() => { onAsOf?.(asOf); }, [asOf, onAsOf]);
 
   const persist = useCallback(async (next) => {
     try {
@@ -1243,6 +1282,28 @@ function MarketBreadthScreen({ series }) {
 // ---------- Main App ----------
 export default function App() {
   const [activeAssetClass, setActiveAssetClass] = useState("equities");
+
+  // Price freshness per asset class. Equities is computed here from this component's
+  // own price state; the other four report theirs upward (they own their price data,
+  // and the header sits above the tabs so it cannot reach into them). The callback is
+  // memoised and the setter no-ops on an unchanged date, so the child effect cannot
+  // drive a render loop.
+  const [assetAsOf, setAssetAsOf] = useState({});
+  const reportAssetAsOf = useCallback((key, summary) => {
+    setAssetAsOf((prev) => {
+      const cur = prev[key];
+      if (cur && summary && cur.iso === summary.iso && cur.stale === summary.stale) return prev;
+      return { ...prev, [key]: summary };
+    });
+  }, []);
+
+  // Stable per-class callbacks: a fresh arrow on every render would re-fire the
+  // children's effects every render (harmless given the no-op guard above, but noisy).
+  const asOfReporters = useMemo(
+    () => Object.fromEntries(["commodities", "indices", "crypto", "currencies"]
+      .map((k) => [k, (summary) => reportAssetAsOf(k, summary)])),
+    [reportAssetAsOf],
+  );
   const [equitiesSubTab, setEquitiesSubTab] = useState("stocks");
   const [commoditiesSubTab, setCommoditiesSubTab] = useState("base");
   const [indicesSubTab, setIndicesSubTab] = useState("base");
@@ -1647,6 +1708,13 @@ export default function App() {
 
   const hasData = master.length > 0;
 
+  // Equities freshness comes straight from this component's own price state; the other
+  // classes have reported theirs in. The header shows whichever class is on screen, so
+  // the date always describes what the reader is actually looking at.
+  const equitiesAsOf = useMemo(() => priceAsOfSummary(prices), [prices]);
+  const activeAsOf = activeAssetClass === "equities" ? equitiesAsOf : assetAsOf[activeAssetClass];
+  const activeAccent = activeAssetClass === "equities" ? T.gold : ASSET_CLASSES[activeAssetClass]?.accent;
+
   return (
     <div onClick={() => { setOpenFilterKey(null); setShowAlerts(false); }} style={{ minHeight: "100vh", background: T.bg, color: T.text, fontFamily: "'IBM Plex Sans', sans-serif" }}>
       <style>{FONTS}{`
@@ -1666,7 +1734,10 @@ export default function App() {
           <div style={{ fontSize: 12, color: T.textDim, marginTop: 2 }}>Fundamental + technical signal ledger — NIFTY 50 pilot</div>
         </div>
         <div style={{ fontSize: 11, color: T.textDim, fontFamily: "'IBM Plex Mono', monospace", display: "flex", alignItems: "center", gap: 14 }}>
-          {hasData ? `${computed.length} stocks loaded${usingSample ? " · DEMO DATA" : ""}` : "No data loaded"}
+          {activeAssetClass === "equities"
+            ? (hasData ? `${computed.length} stocks loaded${usingSample ? " · DEMO DATA" : ""}` : "No data loaded")
+            : null}
+          <PricesAsOn asOf={activeAsOf} accent={activeAccent} />
           <span style={{ position: "relative" }}>
             <button onClick={() => setShowAlerts((v) => !v)} style={{
               padding: 6, borderRadius: 6, border: `1px solid ${T.border}`, background: showAlerts ? T.surfaceAlt : "transparent",
@@ -2081,17 +2152,17 @@ export default function App() {
         <MarketBreadthScreen series={breadthSeries} />
       )}
 
-      {activeAssetClass === "commodities" && commoditiesSubTab === "base" && <GenericAssetScreen config={ASSET_CLASSES.commodities} />}
-      {activeAssetClass === "commodities" && commoditiesSubTab === "breakout" && <GenericGoldenBreakoutScreen config={ASSET_CLASSES.commodities} />}
+      {activeAssetClass === "commodities" && commoditiesSubTab === "base" && <GenericAssetScreen config={ASSET_CLASSES.commodities} onAsOf={asOfReporters.commodities} />}
+      {activeAssetClass === "commodities" && commoditiesSubTab === "breakout" && <GenericGoldenBreakoutScreen config={ASSET_CLASSES.commodities} onAsOf={asOfReporters.commodities} />}
 
-      {activeAssetClass === "indices" && indicesSubTab === "base" && <GenericAssetScreen config={ASSET_CLASSES.indices} />}
-      {activeAssetClass === "indices" && indicesSubTab === "breakout" && <GenericGoldenBreakoutScreen config={ASSET_CLASSES.indices} />}
+      {activeAssetClass === "indices" && indicesSubTab === "base" && <GenericAssetScreen config={ASSET_CLASSES.indices} onAsOf={asOfReporters.indices} />}
+      {activeAssetClass === "indices" && indicesSubTab === "breakout" && <GenericGoldenBreakoutScreen config={ASSET_CLASSES.indices} onAsOf={asOfReporters.indices} />}
 
-      {activeAssetClass === "crypto" && cryptoSubTab === "base" && <GenericAssetScreen config={ASSET_CLASSES.crypto} />}
-      {activeAssetClass === "crypto" && cryptoSubTab === "breakout" && <GenericGoldenBreakoutScreen config={ASSET_CLASSES.crypto} />}
+      {activeAssetClass === "crypto" && cryptoSubTab === "base" && <GenericAssetScreen config={ASSET_CLASSES.crypto} onAsOf={asOfReporters.crypto} />}
+      {activeAssetClass === "crypto" && cryptoSubTab === "breakout" && <GenericGoldenBreakoutScreen config={ASSET_CLASSES.crypto} onAsOf={asOfReporters.crypto} />}
 
-      {activeAssetClass === "currencies" && currenciesSubTab === "base" && <GenericAssetScreen config={ASSET_CLASSES.currencies} />}
-      {activeAssetClass === "currencies" && currenciesSubTab === "breakout" && <GenericGoldenBreakoutScreen config={ASSET_CLASSES.currencies} />}
+      {activeAssetClass === "currencies" && currenciesSubTab === "base" && <GenericAssetScreen config={ASSET_CLASSES.currencies} onAsOf={asOfReporters.currencies} />}
+      {activeAssetClass === "currencies" && currenciesSubTab === "breakout" && <GenericGoldenBreakoutScreen config={ASSET_CLASSES.currencies} onAsOf={asOfReporters.currencies} />}
     </div>
   );
 }

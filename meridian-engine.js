@@ -618,3 +618,55 @@ export function computeAll(master, fundamentals, prices) {
     return { ...m, fund, tech };
   });
 }
+
+
+// ---------- Data freshness ----------
+// The date of the newest bar actually loaded — what the screens are showing, not
+// what today happens to be. It lives here rather than in the UI so the app, the
+// workbook build and the pipeline all answer the question the same way; the
+// workbook's `meta.as_of` is this same value.
+//
+// Deliberately the MAX across instruments rather than an assumption that they all
+// end together. They do today (all 2,089 priced instruments end 2026-09-04), but
+// once the daily job is live a failed fetch leaves one instrument behind while the
+// rest advance (§3.5 — a failure must never advance the watermark). Taking the max
+// then reports the universe's freshness, and `stalePriceCount` below is what
+// surfaces the laggards rather than letting the max quietly cover for them.
+export function latestPriceDate(prices) {
+  let max = null;
+  for (const r of prices || []) {
+    const d = r?.Date;
+    if (d && (max === null || d > max)) max = d;
+  }
+  return max;
+}
+
+// How many instruments' newest bar is older than the universe's newest bar.
+// Zero today; non-zero would mean the daily sweep left instruments behind.
+//
+// ISIN is the right default for all five asset classes, not just equities: the
+// non-equity upload path normalises `Symbol` into `ISIN` as it parses (meridian.jsx,
+// "const mapped = rows.map(...)"), so every price row in the app is ISIN-keyed
+// whatever the class.
+export function stalePriceCount(prices, keyField = "ISIN") {
+  const max = latestPriceDate(prices);
+  if (!max) return 0;
+  const lastByKey = {};
+  for (const r of prices || []) {
+    const k = r?.[keyField];
+    if (k == null || !r.Date) continue;
+    if (lastByKey[k] === undefined || r.Date > lastByKey[k]) lastByKey[k] = r.Date;
+  }
+  let stale = 0;
+  for (const k in lastByKey) if (lastByKey[k] < max) stale++;
+  return stale;
+}
+
+// ISO (YYYY-MM-DD, how the data is stored and sorted) -> DD-MM-YYYY for display.
+// Separators rather than a bare DDMMYYYY run: "04-09-2026" is read correctly at a
+// glance where "04092026" has to be counted out.
+export function formatAsOfDDMMYYYY(isoDate) {
+  if (!isoDate) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(isoDate);
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : isoDate;
+}

@@ -758,6 +758,24 @@ the master CSV, so this is reversible without re-sourcing data.
 - Color accents per asset class (gold=Equities, copper=Commodities, teal=Currencies,
   blue=Global Indices, purple=Crypto) — implemented as accent-prop overrides on a
   consistent base visual language, not full re-themes per asset class.
+- **Data freshness is always on screen (locked 2026-09-07).** The header's top right
+  reads `prices as on DD-MM-YYYY` — the date of the newest price bar *actually loaded*,
+  never the clock. The distinction is the whole point: on a morning the pipeline has not
+  run, the honest answer is yesterday's date, and a screen that quietly implies today's
+  close is worse than one that says nothing. Sourced from `latestPriceDate()` in the
+  engine, so the app, the workbook (`meta.as_of`) and the pipeline all answer it
+  identically.
+  - **It follows the active asset-class tab.** The header sits above the tabs, so the
+    four non-equity screens — which own their own price state — report freshness upward.
+    A class with no data shows nothing rather than borrowing the equities date.
+  - **`· N lagging` appears when instruments trail the universe's newest bar.** Zero
+    today (all 2,089 priced instruments end 2026-09-04), but once the daily sweep is
+    live a failed fetch leaves an instrument behind while the rest advance (§3.5 — a
+    failure must never advance the watermark). The headline date is the universe max, so
+    without this counter the max would quietly cover for the laggards.
+  - Verified by `preview/check-as-of.mjs` (`npm run check:asof`), which drives a real
+    browser and includes a deliberately ragged price file, because a warning that cannot
+    be made to fire is worthless.
 - Persistent (until-marked-done) in-app alerts for recurring maintenance triggers —
   **acknowledged limitation:** this is a reminder that fires only when the app happens
   to be opened, not a proactive push notification. Production replaces this with real
@@ -1448,6 +1466,7 @@ be the authoritative list of what belongs in the GitHub repository.
 | Artifact | `meridian-sample.xlsx` | The original formula-driven workbook (§2.2.4), 6 sample stocks. **Superseded 2026-09-07** — kept as a prototype artifact, not a live deliverable |
 | Output | `meridian-requirements.md` | This document (vision, methodology, locked architecture) |
 | Output | `meridian_backtest.py` | The consolidated, authoritative backtest script |
+| Tooling | `preview/check-as-of.mjs` | Browser check on the freshness header (§5) — date follows the active tab, no cross-class leak, and the lag warning provably fires |
 | Tooling | `preview/` | Local dev harness — runs `meridian.jsx` in a real browser against the real data files, for eyeballing changes and screenshotting every screen. Not part of the production build; see `preview/README.md` |
 
 **Superseded 2026-09-06** by the full-universe backfill (§9 item 0a) — the notes below
@@ -1676,6 +1695,20 @@ the real engine and emits today's candidate set as JSON (`parseCSV` is a small
 RFC4180-ish parser, needed because 75 master rows carry quoted fields with
 embedded commas); the Python side diffs it against its own implementation and
 exits non-zero on any divergence. Runs in CI.
+
+**`latestPriceDate` / `stalePriceCount` / `formatAsOfDDMMYYYY`** (engine) — data
+freshness for the header (§5). `latestPriceDate` takes the MAX bar date across
+instruments rather than assuming they end together; they do today, but a failed
+daily fetch would leave one behind, so `stalePriceCount` counts the laggards the
+max would otherwise hide. Both default to keying on `ISIN`, which is correct for
+all five asset classes: the non-equity upload path normalises `Symbol` into `ISIN`
+as it parses.
+
+**`PricesAsOn` / `priceAsOfSummary`** (meridian.jsx) — the header badge. The four
+non-equity screens own their price state and the header sits above the tabs, so
+they report `{iso, stale}` upward through an `onAsOf` callback; the App keys those
+by asset class and renders whichever is active. The reporters are memoised and the
+setter no-ops on an unchanged date, so the child effect cannot drive a render loop.
 
 **`preview/`** — `trim-prices.mjs` cuts the history to the last 320 bars per
 instrument (enough for every live signal: RS needs 252, the 200DMA slope 220) so
