@@ -1050,6 +1050,46 @@ supply. Once accounts exist and credentials (API keys, connection strings) are s
 environment variables, all subsequent configuration, schema deployment, and code work
 is Claude Code's to do.
 
+#### Sign-in method per account (locked 2026-09-07)
+
+Not a cosmetic preference. GitHub OAuth across every service would make one account a
+skeleton key to source, deployments and database at once, so the choice is deliberately
+mixed — convenience where GitHub is already in the loop, an independent path where
+losing access would be worst.
+
+| Account | Sign in with | Why |
+|---|---|---|
+| **Vercel** | GitHub | Its deploy model *is* Git-driven — it watches the repository and builds on push. GitHub is in the loop regardless, so a second identity buys nothing |
+| **Supabase** | GitHub | Offered and smooth, and GitHub gets connected anyway if branch/preview databases are ever used |
+| **DigitalOcean** | **Email + password + its own 2FA** | The deliberate exception. This holds the billing relationship and the server the pipeline runs on. If GitHub is ever compromised, locked, or stuck in recovery, there must be a route to the infrastructure that does not pass through GitHub. This is the break-glass path |
+| **PostHog** | either | Low stakes; 2FA matters more than the method |
+| **Resend** | either | Low stakes for access, but it sends *as the domain* — see the registrar note below |
+| **Domain registrar** | **Email + strong 2FA, never GitHub** | The root of trust for the app's URL and for Resend's sending reputation. It must not sit downstream of the same account as everything else |
+
+**What this decision does not affect.** The pipeline authenticates to Supabase with the
+**service-role key** held in the VPS environment (§6.3), not with anyone's account. Login
+method governs *human* access only; it has no bearing on how the nightly job or
+`publish_workbook.mjs` connect.
+
+**Because GitHub becomes the key to two of the five, harden it first:**
+- **Passkey or hardware key, not SMS.** SMS 2FA is the weak link in most account-takeover
+  cases, and here it would expose source, deployments and database together.
+- **Store the recovery codes offline.** GitHub 2FA recovery without them is slow and does
+  not always succeed.
+- **Confirm GitHub's primary email is one that will be kept** — it is the root of the
+  recovery path for everything downstream of it.
+
+**When the domain arrives:** add a domain address (`shuja@<domain>`) as a *recovery* email
+on these accounts rather than migrating them to it. A second recovery path is the real
+benefit; migration is friction for no gain.
+
+**One caveat, stated rather than glossed:** the sign-up options each provider offers can
+change, and this was written without being able to verify them from inside this
+environment (a check found only Supabase's *product* auth documentation, which is about
+building auth into an app and says nothing about dashboard accounts). If a provider no
+longer offers the method named above, the reasoning in the "Why" column is what should
+decide the substitute — not the literal cell.
+
 ---
 
 ## 7. Data Sourcing Scripts — Evaluation & Reuse Plan
@@ -1216,6 +1256,8 @@ For quick reference; each item traces to a fuller explanation above.
 - [x] Frontend hosting: Vercel, free tier
 - [x] Notification email provider: Resend, free tier
 - [x] Full tooling & infrastructure list: §6.8
+- [x] Sign-in method per account: GitHub for Vercel and Supabase, email + independent 2FA
+      for DigitalOcean and the domain registrar — §6.8
 
 ---
 
