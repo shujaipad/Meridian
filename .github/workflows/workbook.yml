@@ -72,18 +72,12 @@ jobs:
       - name: Verify every formula and value
         run: python3 verify_workbook.py
 
-      # The build is deterministic given the committed data, so a workbook that
-      # differs from the one in the repository means the engine's output moved.
-      # Worth seeing rather than worth failing on — the committed copy is a dated
-      # reference build, not a lockfile.
-      - name: Note whether the committed workbook is stale
-        if: always()
-        run: |
-          if git diff --quiet -- meridian.xlsx; then
-            echo "committed meridian.xlsx matches this build"
-          else
-            echo "::notice::meridian.xlsx differs from this build — the committed copy is a dated reference, not a lockfile"
-          fi
+      # There is deliberately no "is the committed workbook stale?" step here. The
+      # first version of this workflow had one, and its notice fired on the very
+      # first run and would have fired on every run afterwards: the workbook embeds
+      # a `generated_at` timestamp, so two builds are never byte-identical even
+      # from identical data. A signal that cannot vary is not a signal, which is
+      # the same failure as a check that is always red (§9 item 0c).
 
       - name: Keep the workbook on failure
         if: failure()

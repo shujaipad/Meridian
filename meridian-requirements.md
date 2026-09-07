@@ -1588,11 +1588,18 @@ one row off is caught. `scalar()` exists because `formulas` returns `Ranges`
 wrapping numpy arrays rather than plain values.
 
 **CI (`workbook.yml`)** — runs the same three steps the nightly pipeline runs
-before publishing, path-scoped to the engine, the builders and the data. ~3
+before publishing, path-scoped to the engine, the builders and the data. ~2.5
 minutes. A green run means the publish step will not be the thing that breaks at
 2am, which matters more here than for a normal build check: the workbook is read
 away from the app, so a wrong number in it has no dashboard beside it to
 contradict it.
+
+It deliberately does *not* check whether the committed `meridian.xlsx` is stale.
+The first version did, and its notice fired on the first run and would have fired
+on every run after it — the workbook embeds a `generated_at` timestamp, so two
+builds from identical data are never byte-identical. A signal that cannot vary is
+not a signal; it is the same failure as a check that is always red (item 0c),
+arrived at from the other direction.
 
 **`publish_workbook.mjs`** — uploads to Supabase Storage under
 `daily/meridian-<as-of>.xlsx` and `daily/latest.xlsx`, then prunes past 90 days.
