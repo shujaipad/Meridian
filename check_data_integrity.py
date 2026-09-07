@@ -28,6 +28,7 @@ import pandas as pd
 BASE = os.path.dirname(os.path.abspath(__file__))
 MASTER = os.path.join(BASE, "meridian-company-master-2138.csv")
 PRICES = os.path.join(BASE, "meridian-price-history-2090-part*of3.csv")
+FUNDAMENTALS = os.path.join(BASE, "meridian-fundamentals-742.csv")
 MIN_COVERAGE = 0.05
 
 failures = []
@@ -73,6 +74,31 @@ print("\ncross-file consistency")
 orphans = set(prices.ISIN) - set(master.ISIN)
 check("every priced instrument is in the master", not orphans,
       f"{len(orphans)} orphans")
+
+# An ISIN is revised, not retired, when a corporate action changes the series --
+# INE419M01027 became INE419M01035 for TD Power Systems, and INE811A01020 became
+# INE811A01038 for Kirloskar Pneumatic, between the 742-stock pilot universe and
+# the 2,138-stock master. ISIN is the join key for the whole system, so a stale one
+# does not error anywhere: the row simply stops matching, and the company silently
+# loses its fundamental score in the app, the workbook and the pipeline alike. Three
+# companies were in exactly that state until 2026-09-07.
+#
+# The tell is an ISIN absent from the master whose 9-character issuer prefix matches
+# exactly one master ISIN. Two candidates means the issuer has several listed
+# securities (DVR or partly-paid lines), which is not a revision and must not be
+# rewritten -- so only unambiguous matches are flagged.
+if os.path.exists(FUNDAMENTALS):
+    fund = pd.read_csv(FUNDAMENTALS, dtype={"ISIN": str})
+    by_prefix = {}
+    for isin in master.ISIN:
+        by_prefix.setdefault(isin[:9], []).append(isin)
+    revised = {
+        o: by_prefix[o[:9]][0]
+        for o in set(fund.ISIN) - set(master.ISIN)
+        if len(by_prefix.get(o[:9], [])) == 1
+    }
+    check("no stale (revised) ISINs in fundamentals", not revised,
+          "; ".join(f"{a} -> {b}" for a, b in sorted(revised.items())))
 
 n200 = prices.groupby("ISIN").size().ge(200).sum()
 print(f"\n  {n_inst} instruments priced, {n200} clearing the §3.1 200-bar rule")

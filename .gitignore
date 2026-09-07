@@ -11,3 +11,8 @@ __pycache__/
 # meridian.xlsx itself IS committed, as the reference build; the daily copies live
 # in Supabase Storage rather than in git.
 workbook-data.json
+
+# Loader artifacts — regenerated, and the progress file is machine-local state
+dryrun/
+dryrun-progress.json
+load_supabase_progress.json

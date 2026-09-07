@@ -50,9 +50,16 @@ create table fundamentals_annual (
   id            bigserial primary key,
   universe_id   bigint not null references universe(id) on delete cascade,
   fiscal_year   text not null,
-  roe_pct       numeric(8, 4),
-  roce_pct      numeric(8, 4),
-  debt_equity   numeric(8, 4),
+  -- numeric(12,4), not (8,4). These three are ratios with a denominator that can
+  -- approach zero -- near-zero equity produces an ROE of 100,489% -- and the real
+  -- data carries three such values that would have overflowed numeric(8,4) partway
+  -- through the load. They are not clamped: the composite score ranks by percentile
+  -- (§4.2), so an absurd value simply sits at the top of its metric without
+  -- distorting anyone else's score, and clamping here would make the database
+  -- disagree with what the engine already computes.
+  roe_pct       numeric(12, 4),
+  roce_pct      numeric(12, 4),
+  debt_equity   numeric(12, 4),
   eps           numeric(12, 4),
   sales         numeric(16, 2),
   fixed_assets  numeric(16, 2),

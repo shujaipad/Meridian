@@ -1534,6 +1534,33 @@ For quick reference; each item traces to a fuller explanation above.
 7. **PostHog event instrumentation is not yet scoped.** Which specific actions get
    tracked (which tabs, which interactions) beyond the automatic visitor/time-on-site
    metrics has not been defined — a real, small design task, not just a config setting.
+0d. **~~Three companies silently carried no fundamental score~~ — FIXED 2026-09-07.**
+   Found while validating the Supabase loader, not by anything looking for it. Five ISINs
+   in `meridian-fundamentals-742.csv` were absent from the 2,138-stock master. Three were
+   not missing companies but **revised ISINs** — a corporate action changes the series while
+   the issuer prefix stays put:
+
+   | Was | Is | Company |
+   |---|---|---|
+   | INE419M01027 | INE419M01035 | TD Power Systems |
+   | INE811A01020 | INE811A01038 | Kirloskar Pneumatic |
+   | INE0LZF01013 | INE0LZF01039 | Waterways Leisure Tourism |
+
+   **ISIN is the join key for the entire system, so a stale one errors nowhere.** The row
+   simply stops matching and the company drops out of `computeFundamentalScores` — in the
+   app, the workbook and the pipeline alike. TD Power scores **80.09 (High)** and Kirloskar
+   Pneumatic **73.19 (High)**: two top-tier companies were invisible in the fundamental
+   screen, and nothing anywhere said so. Scored population 1,645 → **1,648**.
+
+   The remaining two ISINs match nothing in the master and are correctly outside the
+   universe per §3.1.
+
+   Fixed in the data at rest rather than in the loader, so every consumer sees it. Guarded
+   in `check_data_integrity.py`: an ISIN absent from the master whose 9-character issuer
+   prefix matches **exactly one** master ISIN is a revision and fails the build. Two matches
+   means the issuer has several listed lines (DVR, partly-paid) and must not be rewritten,
+   so only unambiguous matches are flagged. Negative-tested by reverting one ISIN.
+
 0c. **~~Every CI run had failed since CI was added~~ — FIXED 2026-09-07.** Checked five
    runs after wiring the workflows in; all five were red. The cause was in neither the
    data nor the model: both workflows pass `cache: pip` to `actions/setup-python`, which
@@ -1598,6 +1625,8 @@ be the authoritative list of what belongs in the GitHub repository.
 | Tooling | `check_data_integrity.py` | Fast guards over the committed data — every assertion corresponds to a bug that actually happened (float BSE codes, phantom trading days, non-positive adjusted prices). Run in CI on every push |
 | Tooling | `.github/workflows/` | `data-integrity.yml` (every push), `port-parity.yml` and `workbook.yml` (both path-scoped) |
 | Tooling | `probe_corporate_actions.py` | Measures corporate-action frequency and restatement magnitude against the live API — the evidence §3.5's detect-and-isolate design is sized from. Re-run if the universe changes materially |
+| Tooling | `load_supabase.mjs` | One-time initial load of the CSVs into Supabase — resumable, idempotent, streamed. `--dry-run` shapes every row without sending it, so the output can be COPYed into a real Postgres to prove it fits |
+| Tooling | `verify_load.sql` | Post-load check in the SQL Editor — 13 counts the CSVs and `check_data_integrity.py` already agree on |
 | Tooling | `verify_deploy.sql` | Read-only check that a live Supabase deployment matches §6.6 — run in the SQL Editor after applying the schema, since "Success. No rows returned" says nothing about what was created |
 | Tooling | `verify_rls.sql` | Executes `supabase-schema.sql` against a real Postgres 16 and asserts the §6.6 access model — 30 expectations, negative-tested. Runs in CI |
 | Tooling | `requirements.txt` | Python dependencies. Its absence is why every CI run from 2026-09-06 to 2026-09-07 failed before reaching a single check — see §9 item 0c |
