@@ -952,15 +952,41 @@ table. The schema now discovers the owning role from `pg_default_acl` and revoke
 role, wrapped so a refusal downgrades to a `WARNING` rather than aborting the apply —
 `postgres` on a managed instance may not be a member of that role.
 
-*If that warning ever appears*, the residual risk is bounded and specific: this file's own
-REVOKEs run on every apply, so anything it creates is correct regardless. What a leftover
-default ACL affects is a table created by some **future migration that forgets to revoke** —
-so every migration must end with the same revoke block.
+*That warning did appear on the live project, and the resolution is the useful part.*
+Reading `pg_default_acl` on the real deployment showed **two** owners:
 
-`verify_rls.sql` models both halves: platform grants pre-applied, and default privileges set
-*by a distinct role*. Negative-tested twice — removing the revoke block fails on the first
-anon check, removing the default-ACL block fails with "default privileges still grant to
-anon/authenticated in public (3 entries)".
+| Owner | Grants to | Clearable by `postgres`? | Matters? |
+|---|---|---|---|
+| `postgres` | was anon + authenticated, now `postgres`/`service_role` only | yes — this is what the revoke fixed | **Yes.** This is the one that produced the 77 |
+| `supabase_admin` | postgres, anon, authenticated, service_role | **no** — `postgres` is not a member on a managed instance | **No** |
+
+`ALTER DEFAULT PRIVILEGES` is keyed on the **creating** role, and `supabase_admin` does not
+create Meridian's tables — the SQL Editor and every migration run as `postgres`. So those
+three entries persist forever and are inert. Proven rather than argued: reproducing both
+owners exactly and creating a table as `postgres` yields **zero** privileges for `anon`.
+
+This also means `verify_deploy.sql`'s original "default privileges must be 0" check was
+**wrong** — it counted all owners, reported 3 on a correctly configured project, and sent us
+chasing something harmless. It now separates the migration role's entries (must be 0) from
+other roles' (informational).
+
+**`verify_rls.sql` had to be corrected twice, and the pattern is the lesson.** Each version
+was defeated by modelling the platform slightly wrong, and each passed green while the thing
+it existed to catch was broken:
+
+1. *Clean Postgres, hand-made roles with no privileges.* Missed the platform's grants
+   entirely — the original failure.
+2. *Platform grants added, defaults set as `supabase_admin` only.* Now the schema's tables,
+   created as `postgres`, inherited nothing anyway, so removing the revoke block **still
+   passed**. The setup no longer reproduced the bug it was written for.
+3. *Both owners modelled* — `postgres`'s defaults (what actually produced the 77) and
+   `supabase_admin`'s (unclearable, inert). Removing the revoke block now fails on the first
+   anon check.
+
+It also stopped counting ACL rows and started measuring the **effect**: it re-asserts
+`supabase_admin`'s defaults exactly as a live project has them, creates a table as the
+migration role, and asserts it inherits nothing. That form survives the real constraint —
+that those entries can never be cleared — where a row count cannot.
 
 **Verified by execution, 2026-09-07 — not by reading the DDL.** The schema was written
 and locked in September without ever being run. It now applies cleanly to a real

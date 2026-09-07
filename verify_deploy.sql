@@ -40,9 +40,23 @@ select 'write grants to authenticated (user_consent only)', count(*)::text, '2'
 union all
 -- Default privileges matter as much as current ones: leave them and the NEXT
 -- migration silently re-opens every table it creates.
-select 'default privileges for anon/authenticated (must be 0)', count(*)::text, '0'
+--
+-- But only the entries owned by the role that RUNS migrations can do that.
+-- ALTER DEFAULT PRIVILEGES is keyed on the creating role, so `supabase_admin`'s
+-- entries never apply to a table the SQL Editor creates as `postgres`. Counting
+-- all of them (as an earlier version of this file did) reports 3 on a correctly
+-- configured project and sends you chasing something inert.
+select 'default privs granting anon/authenticated, YOUR role (must be 0)', count(*)::text, '0'
   from pg_default_acl d
   join pg_namespace ns on ns.oid = d.defaclnamespace
   where ns.nspname='public'
+    and d.defaclrole = current_user::regrole
+    and array_to_string(d.defaclacl, ',') ~ '(^|,)(anon|authenticated)='
+union all
+select 'default privs owned by other roles (informational, inert)', count(*)::text, 'n/a'
+  from pg_default_acl d
+  join pg_namespace ns on ns.oid = d.defaclnamespace
+  where ns.nspname='public'
+    and d.defaclrole <> current_user::regrole
     and array_to_string(d.defaclacl, ',') ~ '(^|,)(anon|authenticated)='
 order by 1;

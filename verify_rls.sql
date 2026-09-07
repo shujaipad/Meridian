@@ -60,15 +60,25 @@ end $r$;
 grant usage on schema public to anon, authenticated, service_role;
 grant all privileges on all tables in schema public to anon, authenticated, service_role;
 grant all privileges on all sequences in schema public to anon, authenticated, service_role;
--- Set the default privileges AS supabase_admin, which is what a managed project
--- actually does. This is the second half of the same lesson: the first fix revoked
--- them as `postgres`, which succeeded, reported nothing, and cleared nothing,
--- because ALTER DEFAULT PRIVILEGES only touches defaults created by the role
--- running it. Modelling the owning role is what makes this test able to fail.
-set role supabase_admin;
+-- A live project carries default privileges under TWO owners, confirmed by reading
+-- pg_default_acl on the real deployment. Both must be modelled, for different
+-- reasons, and getting this wrong is what let two earlier versions of this test
+-- pass while the schema was broken:
+--
+--   * `postgres` — the role the SQL Editor and migrations run as. THIS is the one
+--     that produced 77 grants to anon, because ALTER DEFAULT PRIVILEGES is keyed on
+--     the CREATING role. The schema must revoke it, and can.
+--   * `supabase_admin` — the platform's own. `postgres` is not a member of it on a
+--     managed instance, so these can never be cleared. They are also harmless,
+--     since supabase_admin does not create Meridian's tables — and the probe near
+--     the end of this file proves that rather than assuming it.
 alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
 alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
 alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
+set role supabase_admin;
+alter default privileges in schema public grant all on tables to postgres, anon, authenticated, service_role;
+alter default privileges in schema public grant all on sequences to postgres, anon, authenticated, service_role;
+alter default privileges in schema public grant all on functions to postgres, anon, authenticated, service_role;
 reset role;
 
 \echo '--- applying supabase-schema.sql ---'
@@ -232,17 +242,43 @@ begin
   if n <> 0 then raise exception 'authenticated holds % DELETE grant(s); expected none', n; end if;
   raise notice 'ok   authenticated holds exactly 8 read + 2 write grants, no delete';
 
-  -- Default privileges matter as much as current ones: without revoking them the
-  -- NEXT migration silently re-opens every table it creates.
+  -- Default privileges matter as much as current ones: leave the migration role's
+  -- and the NEXT migration silently re-opens every table it creates.
   select count(*) into n from pg_default_acl d
     join pg_namespace ns on ns.oid = d.defaclnamespace
     where ns.nspname = 'public'
+      and d.defaclrole = current_user::regrole
       and array_to_string(d.defaclacl, ',') ~ '(^|,)(anon|authenticated)=';
   if n <> 0 then
-    raise exception 'default privileges still grant to anon/authenticated in public (% entr(y/ies))', n;
+    raise exception 'the migration role''s default privileges still grant to anon/authenticated (% entr(y/ies))', n;
   end if;
-  raise notice 'ok   no default privileges left for anon/authenticated';
+  raise notice 'ok   migration role''s default privileges grant nothing to anon/authenticated';
 end $$;
+
+-- The assertion above counts ACL rows. This one measures the EFFECT, which is what
+-- actually matters and is the only form that survives the real-world constraint:
+-- on a managed instance `postgres` is not a member of `supabase_admin` and CANNOT
+-- clear its default privileges. Those entries therefore persist forever — and are
+-- harmless, because ALTER DEFAULT PRIVILEGES is keyed on the creating role and
+-- `supabase_admin` does not create Meridian's tables. Re-assert them here, exactly
+-- as a live project has them, and prove a table created by the migration role still
+-- inherits nothing.
+set role supabase_admin;
+alter default privileges in schema public grant all on tables to postgres, anon, authenticated, service_role;
+reset role;
+
+create table public._defacl_probe (id int);
+do $$
+declare n int;
+begin
+  select count(*) into n from information_schema.role_table_grants
+    where table_name = '_defacl_probe' and grantee in ('anon','authenticated');
+  if n <> 0 then
+    raise exception 'a newly created table inherited % privilege(s) for anon/authenticated', n;
+  end if;
+  raise notice 'ok   a newly created table inherits nothing for anon/authenticated';
+end $$;
+drop table public._defacl_probe;
 
 \echo ''
 \echo '--- storage: the daily workbook bucket (§2.2.3) ---'
