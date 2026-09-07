@@ -57,11 +57,146 @@ drifting apart over time.
 earliest pilot-build phase, before being renamed to "Meridian." Purely historical —
 every reference in this document and the current codebase uses "Meridian."
 
-### 2.2 The Excel Workbook — a real, parallel deliverable, not an afterthought
+### 2.2 The Excel Workbook — rebuilt 2026-09-07, now generated from the engine
 From the very first architecture discussion, the build was explicitly scoped as a
 **hybrid**: a computation engine feeding an interactive dashboard (the artifact,
 covered above), *plus* a board-shareable static Excel workbook as a secondary output —
 not a nice-to-have bolted on later.
+
+**The workbook stays alive, but it no longer re-derives the model.** It is now generated
+in two stages from the same engine the app runs, and published daily. What follows is
+the new design; the original formula-driven workbook is recorded after it, because the
+reason it was replaced is the substance of the decision.
+
+#### 2.2.1 The rebuild (current)
+
+**The decision, and why.** The old workbook computed the model in Excel formulas — every
+cell live, no hardcoded results. That made it a *third implementation* of Meridian
+alongside `meridian-engine.js` and `meridian_backtest.py`. §7.2 rejects duplicate
+implementations on principle, and `verify_port` exists precisely because the two that
+must exist will otherwise drift. A third one, written in a language with no tests and no
+CI, was never going to hold. It did not: its financial-sector exemption enumerated 11
+industries in an `OR()` formula while the engine enumerated 12, so it silently mis-scored
+Bajaj Finserv, Aditya Birla Capital and Cholamandalam Financial Holdings — a wrong number
+presented with the same authority as a right one.
+
+So the rule is now: **model outputs are values produced by `meridian-engine.js`; formulas
+are used only where they compute something the model does not define.** Cross-sheet
+counts, distributions, and ratios between adjacent columns recalculate meaningfully and
+*cannot* disagree with the model, because they are arithmetic over its output rather than
+a restatement of it. Engine values are styled blue (the input convention); workbook
+formulas are black. The Read Me sheet says all of this to the reader.
+
+**Two-stage build.**
+1. `node build_workbook.mjs` — imports the engine, computes every screen, emits
+   `workbook-data.json` (~1.9 MB). ~40 s.
+2. `python3 build_workbook.py` — formats that JSON into `meridian.xlsx` with openpyxl
+   (~775 KB, 8 sheets). ~5 s.
+
+The split exists so that stage 1 cannot be tempted into re-deriving anything: it has no
+access to Excel, and stage 2 has no access to the model.
+
+**Sheets — one per Meridian sub-tab, plus three supporting.**
+
+| Sheet | Rows | Contents |
+|---|---|---|
+| Read Me | — | What this is, where the numbers come from, blue-vs-black, what is deliberately absent |
+| Dashboard | — | Coverage, the Golden Breakout gate funnel, tier and RS distributions, latest breadth, industry summary. Entirely formulas |
+| Golden Breakout | 12 | The day's qualifying stocks, ranked |
+| Stocks | 2,138 | Every instrument, all technical and fundamental fields, gate columns tagged G1a–G5 |
+| Sectoral | 120 | Synthetic equal-weight industry indices |
+| Sectoral Breakout | 0 | Industry indices clearing the same five gates |
+| Market Breadth | 500 | Participation history |
+| Universe | 2,138 | The quarterly universe definition |
+
+**The self-check.** The Dashboard rebuilds all five Golden Breakout gates with `COUNTIFS`
+over the Stocks sheet's gate columns and compares the count against the screener's own
+row count, printing `OK` or `MISMATCH`. This is the one place the workbook is *allowed*
+to restate the model, because its entire purpose is to detect disagreement rather than to
+produce a number anyone relies on. It currently reads OK (791 → 634 → 608 → 16 → 12,
+against a screener output of 12).
+
+**Sectoral Breakout is empty, and that is a real finding rather than a missing feed.** An
+equal-weight index of many stocks moves far more smoothly than any of its constituents,
+so its 50/200 DMA crossovers are rare and age past the freshness window quickly. On the
+2026-09-04 run, 104 of 120 industries were in golden-cross state and 72 also cleared
+separation and a rising 200DMA — but the freshest cross among them was **23 trading days
+old**, outside the 15-day gate. The sheet says so in place of rendering blank. Expect it
+to populate in clusters after a broad market turn, not daily.
+
+**What is deliberately not in the workbook.** Commodities, Currencies, Crypto and Global
+Indices. Their universes are defined (§3.2), but the only price files in the repository
+are prototype samples — an identical 1,260 bars for every symbol, crypto ending 18 months
+before the others, and no currency price file at all — and the Golden Breakout thresholds
+are unvalidated outside equities (§9). Sheets built on that data would carry the same
+authority as the equity sheets and be wrong. They are omitted until those universes are
+backfilled the way equities were.
+
+#### 2.2.2 Verification — and why `recalc.py` could not be used
+
+The xlsx skill mandates `recalc.py` (LibreOffice) to prove every formula evaluates.
+**It cannot run in this build container**: LibreOffice starts and creates a profile in
+0.1 s, but cannot *load a document* of any kind — a two-line CSV fails identically to a
+workbook — so the Basic macro dispatch `recalc.py` depends on hangs until timeout. This
+was isolated rather than assumed: profile creation, `--convert-to`, and the macro path
+were each timed separately.
+
+`verify_workbook.py` covers the same ground by a different route, and goes further:
+
+1. **`formulas`** (pure-Python evaluator) computes the whole workbook — 96,054 cells,
+   zero `#NAME?`/`#REF!`/`#VALUE!`/`#N/A`.
+2. **44 value assertions computed independently from `workbook-data.json`**, not read
+   back out of the sheet. This is the half that matters: a clean evaluation only proves a
+   formula *parses*, and an off-by-one range evaluates perfectly while returning the
+   wrong number.
+
+That second half earned itself immediately. `COUNTA('Sectoral Breakout'!$B$2:$B$1000)`
+returned **2** instead of 0, because the empty-state explanation written into column B
+fell inside the counted range. A LibreOffice recalc would have reported that workbook
+clean. Both breakout counts now count the numeric Rank column, which no text note can
+contaminate.
+
+Because openpyxl writes formulas with no cached values and LibreOffice cannot bake them
+in here, the workbook sets `fullCalcOnLoad`, so Excel and LibreOffice both recalculate the
+moment the file is opened.
+
+#### 2.2.3 Daily availability
+
+Published to **Supabase Storage** by `publish_workbook.mjs`, as the last step of the
+nightly pipeline (§6.3). No new infrastructure — Storage is already in the locked stack
+(§6.8).
+
+- Private bucket `workbooks` (`public = false`), so object URLs are not
+  guessable-and-fetchable. DDL and policies are in `supabase-schema.sql`.
+- Two keys written per run: `daily/meridian-<as-of>.xlsx` and `daily/latest.xlsx`. The
+  frontend's download button targets the stable path; the history stays addressable.
+- **Dated by the data's as-of date, not the run time** — a job retried the next morning
+  must not publish yesterday's screen under today's name.
+- RLS mirrors every other object: `authenticated` may `select`; writes have no policy at
+  all, so only the pipeline's `service_role` can publish.
+- The frontend calls `createSignedUrl()` with the user's own session and gets a
+  short-lived URL. Access dies with the invitation:
+
+  ```js
+  const { data, error } = await supabase.storage
+    .from("workbooks")
+    .createSignedUrl("daily/latest.xlsx", 60, { download: `meridian-${asOf}.xlsx` });
+  ```
+
+  `download` sets the filename the browser saves as, so every user's copy is dated
+  even though the object key is stable. The button is not wired into `meridian.jsx`
+  yet — the app has no Supabase client at all until the accounts exist (§9).
+- **90-day retention**, pruned each run on the date in the filename rather than
+  `created_at` (a re-published file would otherwise look young). ~775 KB × 90 ≈ **70 MB**,
+  which sits inside the 500 MB budget alongside the ~150–170 MB of price history.
+
+If the nightly build or `verify_workbook.py` fails, the job stops before publishing:
+`daily/latest.xlsx` keeps yesterday's good workbook rather than being replaced by a
+broken one.
+
+#### 2.2.4 The original formula-driven workbook (superseded 2026-09-07)
+
+Retained because the failure mode is the argument for the rebuild above.
 
 **Structure (unchanged since the original design):**
 - **Instructions** — usage notes, explains which sheets are input (yellow-filled,
@@ -110,17 +245,14 @@ effect: those specific helper columns ship visible rather than hidden. Cosmetic,
 correctness issue — the values and formulas themselves are unaffected — but a real,
 diagnosed platform limitation, not an oversight.
 
-**Known, explicit gap — the Excel workbook is meaningfully behind the dashboard today.**
-It reflects the state of the model *before* the Golden Breakout redesign (§4.3) and the
-multi-asset framework (§2.1). It does **not** currently have: the five-gate Golden
-Breakout logic, the multi-asset structure, Sectoral computation, or Market Breadth. This
-gap was explicitly flagged during the build and has not yet been closed — bringing Excel
-current with the dashboard's present state is real, scoped, not-yet-done work, not an
-oversight to silently carry forward.
-
-**Now tracked as §9 item 8**, with a verified inventory of exactly what the workbook has,
-what it lacks, and the one thing in it that is actively wrong rather than merely absent
-(its financial-sector exemption list is a category short since 2026-09-06).
+**The gap that ended it.** The old workbook reflected the model *before* the Golden
+Breakout redesign (§4.3) and the multi-asset framework (§2.1) — no five-gate logic, no
+multi-asset structure, no Sectoral computation, no Market Breadth — and its
+financial-sector exemption had been a category short since 2026-09-06. Closing that gap
+by hand would have meant re-deriving four more screens in Excel formulas and keeping
+*them* in sync too. The rebuild above closes it instead by removing the second copy of
+the model. `meridian-sample.xlsx` stays in the repository as an artifact of the
+prototype, not as a live deliverable.
 
 ### 2.3 Known limitations of the current (artifact) implementation
 - **Hard storage ceiling.** Client-side artifact storage caps at **20MB total**, across
@@ -592,8 +724,18 @@ Fetch (Yahoo Finance)
   → 60-trading-day corporate-action reconciliation (§3.5)
   → Compute (Node.js, reusing Meridian's JS engine)
   → Write to output tables
+  → Build the workbook   (build_workbook.mjs → build_workbook.py)
+  → Verify it            (verify_workbook.py — abort the publish on failure)
+  → Publish it           (publish_workbook.mjs → Supabase Storage)
 ```
 The same chain runs nightly (incremental) and quarterly (full universe, post-review).
+
+The three workbook steps run **after** the table swap below, and add ~1 minute. They are
+ordered so that a failed build or a failed verification stops before publication:
+`daily/latest.xlsx` then keeps the previous night's good workbook rather than being
+overwritten with a broken one. A workbook failure must not fail the pipeline's primary
+job — the app's tables are already live and correct by that point — so this stage alerts
+(§6.5) rather than rolling anything back.
 
 **Atomicity (locked, 2026-09-05):** the compute step writes into `_staging` copies of
 every output table, then a single Postgres transaction renames the live tables to `_old`,
@@ -1090,41 +1232,32 @@ For quick reference; each item traces to a fuller explanation above.
 7. **PostHog event instrumentation is not yet scoped.** Which specific actions get
    tracked (which tabs, which interactions) beyond the automatic visitor/time-on-site
    metrics has not been defined — a real, small design task, not just a config setting.
-8. **The Excel workbook is well behind the dashboard, and the gap is now wide.** §2.2
-   flagged this when the divergence was the Golden Breakout redesign and the multi-asset
-   framework; everything since has widened it further. Verified against
-   `meridian-sample.xlsx` directly rather than assumed:
+8. **~~The Excel workbook is well behind the dashboard~~ — RESOLVED 2026-09-07.**
+   The decision this item asked for ("whether the workbook remains a live deliverable or
+   is retired") was taken: **it stays alive, rebuilt rather than patched.** Bringing the
+   formula-driven workbook current would have meant re-deriving four more screens in
+   Excel and keeping a third implementation of the model in sync forever. Instead the
+   model was removed from the workbook: `build_workbook.mjs` computes every screen with
+   `meridian-engine.js` and `build_workbook.py` formats the result, so the workbook can no
+   longer disagree with the app about anything — including which stocks are financials,
+   which was the concrete failure that made this item urgent.
 
-   **What it still has, and correctly:** the full technical block (CMP, MA3–MA200, RSI14,
-   S/M signal columns, 52-week high/low, Vol Breakout %, MA200 Slope% and Rising), the
-   complete fundamentals block with per-metric percentiles, `Fund Score` and `Fund Tier`,
-   and the `FinExempt` flag — 74 Screener columns, every one a live formula.
+   Everything the old item listed as missing is now present: the five-gate Golden Breakout
+   model, Sectoral, Market Breadth, the full 2,138-stock universe, granular Industry Name
+   grouping (§4.5), and the corrected 12-category exemption. The dead
+   `Benchmark Price History` sheet is gone with the workbook it belonged to.
 
-   **What it lacks entirely:**
-   - **The Golden Breakout model.** It carries the *inputs* (MA200 slope, Vol Breakout %)
-     but has no golden-cross state, streak or separation column, and none of the five
-     gates. The headline signal of the product is absent.
-   - **Sectoral** indices and **Market Breadth**.
-   - **The multi-asset structure** — Equities only; no Commodities, Currencies, Global
-     Indices or Crypto.
+   Two things the old item did not ask for came with the rebuild: a **self-check** on the
+   Dashboard that rebuilds the gate funnel with `COUNTIFS` and flags any disagreement with
+   the screener, and **daily publication** to Supabase Storage with a signed-URL download
+   (§2.2.3). Verification is by `verify_workbook.py` rather than `recalc.py`, which cannot
+   run in this container — see §2.2.2 for the isolation of that failure and what replaced
+   it.
 
-   **What is now actively wrong rather than merely missing:**
-   - **`FinExempt` enumerates 11 categories and omits `Holding Companies`** (verified by
-     reading the formula). It would therefore mis-score Bajaj Finserv, Aditya Birla
-     Capital and Cholamandalam Financial Holdings exactly as the app did before the
-     2026-09-06 fix (§4.2).
-   - **Sectoral grouping**, if added, must use the granular Industry Name field per the
-     2026-09-06 change (§4.5) — the workbook predates that decision entirely.
-   - It holds **6 sample stocks**, not the 2,138-stock universe.
-   - A vestigial **`Benchmark Price History`** sheet survives from the pre-locked design
-     in which RS was benchmark-relative; §4.1 dropped that for population-relative
-     ranking, so the sheet is dead weight.
-
-   **Not scheduled.** Bringing it current is real, scoped work that has never been
-   started, and it grows every time the dashboard moves. Worth an explicit decision at
-   some point on whether the workbook remains a live deliverable (§2.2 scoped it as one
-   from the outset) or is retired — because a board-shareable artefact that silently
-   disagrees with the app on which stocks are financials is worse than not having one.
+   **Still open, deliberately:** the workbook covers Equities only. Commodities,
+   Currencies, Crypto and Global Indices are blocked on the same thing item 3 is blocked
+   on — real price history and validated thresholds — not on workbook work. They get
+   sheets when those universes are backfilled the way equities were.
 
 ---
 
@@ -1154,7 +1287,12 @@ be the authoritative list of what belongs in the GitHub repository.
 | Input | `meridian-indices-master.csv` | Real, verified universe (23 instruments) — `-prices-sample.csv` remains synthetic, real price history not yet sourced |
 | Input | `meridian-crypto-master.csv` | Real, verified universe (26 instruments) — `-prices-sample.csv` remains synthetic, real price history not yet sourced |
 | Output | `meridian.jsx` | The application |
-| Output | `meridian-sample.xlsx` | The parallel Excel workbook deliverable (§2.2) |
+| Output | `meridian.xlsx` | **The workbook** (§2.2) — 8 sheets, generated from the engine, published daily to Supabase Storage. The committed copy is the 2026-09-04 build kept as a reference; daily copies live in Storage, not in git |
+| Tooling | `build_workbook.mjs` | Stage 1 — computes every screen via `meridian-engine.js`, emits `workbook-data.json` |
+| Tooling | `build_workbook.py` | Stage 2 — formats that JSON into `meridian.xlsx` with openpyxl |
+| Tooling | `verify_workbook.py` | Evaluates every formula in pure Python and asserts 44 values against the JSON. Stands in for `recalc.py`, which cannot run here (§2.2.2) |
+| Tooling | `publish_workbook.mjs` | Uploads the workbook to Supabase Storage under a dated key plus `latest.xlsx`, and prunes past 90 days |
+| Artifact | `meridian-sample.xlsx` | The original formula-driven workbook (§2.2.4), 6 sample stocks. **Superseded 2026-09-07** — kept as a prototype artifact, not a live deliverable |
 | Output | `meridian-requirements.md` | This document (vision, methodology, locked architecture) |
 | Output | `meridian_backtest.py` | The consolidated, authoritative backtest script |
 | Tooling | `preview/` | Local dev harness — runs `meridian.jsx` in a real browser against the real data files, for eyeballing changes and screenshotting every screen. Not part of the production build; see `preview/README.md` |
@@ -1391,6 +1529,55 @@ instrument (enough for every live signal: RS needs 252, the 200DMA slope 220) so
 a browser can parse it; `capture.mjs` drives the uploads and screenshots every
 screen; `src/main.jsx` shims `window.storage` in memory.
 
+### 11.5a The workbook build (§2.2)
+
+**`build_workbook.mjs`** (stage 1, Node) — the only stage that touches the model.
+Reads the three CSVs, calls `computeAll`, `computeRSUniverse`,
+`computeFundamentalScores`, `computeSectoralSeries`, `computeTechnicalBlock`,
+`computeBreadthSeries` and `runGoldenBreakoutScreener` — the same sequence
+`meridian.jsx` runs — and flattens the results into `workbook-data.json`.
+
+Three details in it are load-bearing rather than incidental:
+- **`computeRSUniverse` returns an object per id**, `{rating, band, streakDays,
+  capped}`, not a bare number. An early version passed that object into
+  `bandOfRSRating`, where every numeric comparison is silently false, so all 2,089
+  stocks came out banded green. Caught by eyeballing the band distribution, not by
+  any error.
+- **The two price-vs-MA gates are emitted as columns** (`PriceAbove50DMA`,
+  `PriceAbove8DMA`) purely so the workbook can rebuild the whole five-gate funnel
+  in-sheet and check it against the screener. Without them the Dashboard's
+  self-check could only get as far as gate 3.
+- **A ragged-row guard runs before writing.** `JSON.stringify` drops keys whose
+  value is `undefined`, so the 49 instruments with no price history were emitting
+  33 fields where the rest emitted 35. Anything reading the file positionally
+  would have been quietly misaligned.
+
+**`build_workbook.py`** (stage 2, openpyxl) — formatting only; it never
+recomputes. `write_sheet` is a small table writer driven by a column spec
+(`header, key-or-lambda, number format, width, kind`), where `kind` is `v` for an
+engine value (styled blue, the input convention) or `f` for a workbook formula
+(black). Percent-point figures are divided by 100 once, up front, so Excel's
+percent format behaves and the columns stay usable in the reader's own formulas.
+The `S` dict maps field names to column letters and is the single place the Stocks
+sheet's column order is written down — the Dashboard's `COUNTIFS` are built from
+it. Sets `fullCalcOnLoad`, because openpyxl writes no cached values and nothing in
+this container can bake them in.
+
+**`verify_workbook.py`** — evaluates the workbook with `formulas` (pure Python),
+fails on any Excel error cell, then asserts 44 values against
+`workbook-data.json`. The assertions are the point: they are computed from the
+JSON rather than read back from the sheet, so a range that points one column or
+one row off is caught. `scalar()` exists because `formulas` returns `Ranges`
+wrapping numpy arrays rather than plain values.
+
+**`publish_workbook.mjs`** — uploads to Supabase Storage under
+`daily/meridian-<as-of>.xlsx` and `daily/latest.xlsx`, then prunes past 90 days.
+Two deliberate choices: it takes the date from `meta.as_of` in the JSON rather
+than the clock (a retried job must not publish yesterday's screen as today's), and
+it prunes on the date in the filename rather than `created_at` (a re-published
+file would otherwise look young and survive). A failed prune exits 0 — the upload
+already succeeded, and failing there would mask a good publish.
+
 ### 11.6 The sequence, end to end
 
 **Today (manual):** upload CSVs → `computeAll` → `computeRSUniverse` →
@@ -1412,6 +1599,10 @@ fetch_prices.py  →  clean_price_calendar.py  →  check_data_integrity.py
    staging tables → single-transaction swap (§6.3)
                  ↓
         Meridian reads the results. It computes nothing.
+                 ↓
+   build_workbook.mjs → build_workbook.py → verify_workbook.py
+                 ↓
+   publish_workbook.mjs → Supabase Storage → signed-URL download in the app
 ```
 
 The engine is identical in both. Only what feeds it and what consumes it changes
