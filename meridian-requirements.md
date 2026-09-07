@@ -910,6 +910,37 @@ with the project's cost/ops priorities throughout. Not yet built.
 default — left as-is, a thin frontend querying Supabase directly would be open to
 anyone with the URL. This was explicitly identified and closed, not an oversight.
 
+**A real deployment found what the test did not, 2026-09-07 — read this before
+trusting the section below.** The first Supabase deployment of this schema produced
+**77 table privileges for `anon`** (11 tables × 7 privilege types), 11 SELECT grants to
+`authenticated` instead of 8, and 22 writes instead of 2. The cause: **a Supabase project
+pre-grants `all privileges on all tables in schema public` to `anon` and `authenticated`,
+and sets `alter default privileges` so every table created afterwards inherits the same.**
+`supabase-schema.sql` granted what it wanted but never revoked what the platform had
+already given, so it was not self-sufficient.
+
+**No data was exposed.** RLS held: `anon` read 0 rows from every table and every write was
+refused. But the two-layer model this section describes had silently become one, and the
+failure mode had *inverted* — which is the part that mattered. Without a grant, `anon` is
+refused loudly (`permission denied`). With a grant plus RLS, `anon` gets a silent empty
+result. A later change that disabled RLS on one table, or added one over-broad policy,
+would then have exposed reads *and writes* with nothing raising its voice.
+
+**Why the test missed it, which is the more useful lesson.** `verify_rls.sql` ran against a
+clean Postgres with hand-made `anon`/`authenticated` roles that had no privileges to begin
+with. It therefore validated the schema against **an environment that does not exist**, and
+passed while the real deployment was wide open at the grant layer. A test is only worth its
+fidelity to the thing it stands in for. It now seeds Supabase's actual default grants
+*before* applying the schema, so the schema has to revoke them exactly as it must in
+production, and asserts the grant layer directly (anon holds zero privileges;
+`authenticated` holds exactly 8 read + 2 write and no delete; no default privileges remain).
+Negative-tested by restoring the pre-fix schema: it now fails on the first check.
+
+**Fixed in `supabase-schema.sql`** by revoking tables, sequences and functions from both
+public roles — and the matching `alter default privileges` — *before* granting, so the file
+produces the same end state on a clean database or a live Supabase project. Re-runnable
+safely. `verify_deploy.sql` gained a default-privileges row.
+
 **Verified by execution, 2026-09-07 — not by reading the DDL.** The schema was written
 and locked in September without ever being run. It now applies cleanly to a real
 Postgres 16 (the version Supabase runs), and `verify_rls.sql` asserts **30 expectations**

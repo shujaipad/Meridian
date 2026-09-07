@@ -46,6 +46,19 @@ create or replace function auth.uid() returns uuid language sql stable as
 create or replace function auth.role() returns text language sql stable as
   $$ select current_user::text $$;
 
+-- CRITICAL, and the reason the first version of this test was worthless: a real
+-- Supabase project pre-grants ALL privileges on everything in `public` to anon and
+-- authenticated, and sets ALTER DEFAULT PRIVILEGES so every new table inherits the
+-- same. Testing against a clean Postgres therefore validated the schema against an
+-- environment that does not exist -- it passed while the real deployment had 77
+-- grants to anon. Model the platform's defaults BEFORE applying the schema, so the
+-- schema has to revoke them the way it must in production.
+grant usage on schema public to anon, authenticated, service_role;
+grant all privileges on all tables in schema public to anon, authenticated, service_role;
+grant all privileges on all sequences in schema public to anon, authenticated, service_role;
+alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
+alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
+
 \echo '--- applying supabase-schema.sql ---'
 \i supabase-schema.sql
 
@@ -178,6 +191,45 @@ begin
     where user_id='22222222-2222-2222-2222-222222222222';
   if b is not false then raise exception 'B''s consent was modified'; end if;
   raise notice 'ok   B consent untouched';
+end $$;
+
+\echo ''
+\echo '--- grant layer: the SECOND defence, independent of RLS ---'
+\echo '--- §6.6: "No grants to anon anywhere, deliberately" ---'
+do $$
+declare n int;
+begin
+  select count(*) into n from information_schema.role_table_grants
+    where grantee='anon' and table_schema='public';
+  if n <> 0 then
+    raise exception 'anon holds % table privilege(s) in public — Supabase''s default grants were not revoked', n;
+  end if;
+  raise notice 'ok   anon holds no table privilege in public';
+
+  select count(*) into n from information_schema.role_table_grants
+    where grantee='authenticated' and table_schema='public' and privilege_type='SELECT';
+  if n <> 8 then raise exception 'expected 8 SELECT grants to authenticated (7 display + user_consent), found %', n; end if;
+
+  select count(*) into n from information_schema.role_table_grants
+    where grantee='authenticated' and table_schema='public'
+      and privilege_type in ('INSERT','UPDATE');
+  if n <> 2 then raise exception 'expected 2 write grants to authenticated (user_consent only), found %', n; end if;
+
+  select count(*) into n from information_schema.role_table_grants
+    where grantee='authenticated' and table_schema='public' and privilege_type='DELETE';
+  if n <> 0 then raise exception 'authenticated holds % DELETE grant(s); expected none', n; end if;
+  raise notice 'ok   authenticated holds exactly 8 read + 2 write grants, no delete';
+
+  -- Default privileges matter as much as current ones: without revoking them the
+  -- NEXT migration silently re-opens every table it creates.
+  select count(*) into n from pg_default_acl d
+    join pg_namespace ns on ns.oid = d.defaclnamespace
+    where ns.nspname = 'public'
+      and array_to_string(d.defaclacl, ',') ~ '(^|,)(anon|authenticated)=';
+  if n <> 0 then
+    raise exception 'default privileges still grant to anon/authenticated in public (% entr(y/ies))', n;
+  end if;
+  raise notice 'ok   no default privileges left for anon/authenticated';
 end $$;
 
 \echo ''

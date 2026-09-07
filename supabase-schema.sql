@@ -202,6 +202,38 @@ create policy "insert_own_consent" on user_consent for insert with check (auth.u
 create policy "update_own_consent" on user_consent for update using (auth.uid() = user_id);
 
 -- ============================================================================
+-- REVOKE SUPABASE'S DEFAULT GRANTS FIRST -- added 2026-09-07 after the first
+-- real deployment proved this file was NOT self-sufficient.
+-- ============================================================================
+-- A Supabase project ships with `grant all privileges on all tables in schema
+-- public to anon, authenticated, service_role` AND a matching ALTER DEFAULT
+-- PRIVILEGES, so every table created afterwards silently inherits full
+-- privileges for both public roles. Applying this file to a fresh project
+-- therefore produced 77 grants to `anon` (11 tables x 7 privilege types), not
+-- the zero the section below assumed.
+--
+-- RLS still held -- anon read 0 rows and every write was refused -- but the
+-- two-layer model §6.6 describes had quietly become one layer, and the failure
+-- mode had inverted. Without a grant, anon gets a loud "permission denied". With
+-- a grant and RLS, anon gets a silent empty result. So a future change that
+-- disabled RLS on one table, or added one over-broad policy, would expose
+-- everything -- reads AND writes -- with nothing raising its voice.
+--
+-- Revoke before granting, so this file produces the same end state whether it
+-- runs on a clean database or a real Supabase project.
+revoke all on all tables in schema public from anon, authenticated;
+revoke all on all sequences in schema public from anon, authenticated;
+-- No RPC is exposed today. If one is ever added, grant execute on it explicitly
+-- rather than relaxing this line.
+revoke all on all functions in schema public from anon, authenticated;
+
+-- Stop NEW tables from inheriting the same. Without this, the next migration
+-- silently re-opens everything it creates.
+alter default privileges in schema public revoke all on tables from anon, authenticated;
+alter default privileges in schema public revoke all on sequences from anon, authenticated;
+alter default privileges in schema public revoke all on functions from anon, authenticated;
+
+-- ============================================================================
 -- TABLE-LEVEL GRANTS -- PostgREST (Supabase's API layer) also checks plain
 -- SQL grants before RLS ever runs. No grants to `anon` anywhere, deliberately:
 -- every table requires a real authenticated session at both layers, not RLS

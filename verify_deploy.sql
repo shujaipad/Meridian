@@ -37,4 +37,12 @@ select 'write grants to authenticated (user_consent only)', count(*)::text, '2'
   from information_schema.role_table_grants
   where grantee='authenticated' and table_schema='public'
     and privilege_type in ('INSERT','UPDATE')
+union all
+-- Default privileges matter as much as current ones: leave them and the NEXT
+-- migration silently re-opens every table it creates.
+select 'default privileges for anon/authenticated (must be 0)', count(*)::text, '0'
+  from pg_default_acl d
+  join pg_namespace ns on ns.oid = d.defaclnamespace
+  where ns.nspname='public'
+    and array_to_string(d.defaclacl, ',') ~ '(^|,)(anon|authenticated)='
 order by 1;
