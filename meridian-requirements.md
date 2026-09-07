@@ -319,7 +319,7 @@ prototype, not as a live deliverable.
 - **One-time activity:** full historical backfill at initial setup.
 - **Recurring:** the same backfill logic runs quarterly, scoped to whatever's newly
   added to the universe that cycle, plus a full-universe re-pull as a backup
-  reconciliation check (§3.5).
+  reconciliation check (§3.5, which now isolates the few instruments that need one).
 - **Built and run: `fetch_prices.py`** (2026-09-06). Replaces the older Colab scripts
   §7.3 evaluated — it runs unattended, logs per-instrument success/failure, rate-limits,
   resumes after interruption, and handles the four-way ticker fallback Yahoo's
@@ -327,23 +327,98 @@ prototype, not as a live deliverable.
   script serves the quarterly re-pull. **Only the bulk shape** — the daily incremental
   job remains separate engineering (§7.3).
 
-### 3.5 Daily maintenance (prices)
-- **Daily fetch:** incremental — today's new bar(s) only, not a re-pull of full history.
-  *No existing script does this yet; it is new engineering* (see §7.3).
-- **Corporate-action reconciliation (locked):** the daily job re-fetches and
-  **overwrites** a **trailing 60-trading-day window** (not just the newest day) with
-  freshly adjusted data each run. This ensures a split or bonus issue is corrected
-  within ~1 day, rather than left as a discontinuity until the next quarterly cycle.
-  - *Rationale:* corporate actions retroactively re-adjust a stock's entire historical
-    series, not just the date of the event. A pure day-by-day append would create a
-    silent, uncorrected discontinuity in stored data exactly where MA-based signals
-    (including Golden Breakout) are most sensitive to it.
-  - *Known residual risk, stated explicitly rather than assumed away:* there is no way
-    to verify from this environment how promptly or completely Yahoo Finance's
-    adjustment data reflects a corporate action for smaller Indian listings specifically.
-    The 60-day window is a safety margin against that uncertainty, not a guarantee.
-- **Quarterly full re-pull stays in place** as a backup check on top of daily
-  reconciliation — explicitly confirmed as *not* made redundant by the daily process.
+### 3.5 Daily maintenance (prices) — **detect-and-isolate (locked 2026-09-07)**
+
+**This supersedes the previous locked design**, which re-fetched a trailing 60-trading-day
+window for *every* instrument, every night. That was a blanket proxy for detection: it
+re-pulled 2,138 instruments daily on the assumption we could not tell which few actually
+needed it. We can. The rule is now **narrow daily, deep only where something moved**.
+
+#### The shape
+
+| | Window | Applies to | Volume |
+|---|---|---|---|
+| **Daily sweep** | `range=1mo` (~22 bars) | every instrument | ~2,138 requests |
+| **Deep re-pull** | 5 years, full overwrite | only flagged instruments | **~7/day**, ~20–40 at peak |
+
+Measured against the live API over a 70-instrument sample: **0.79 corporate actions per
+stock per year**, 39% of stocks with none at all, extrapolating to ~1,680 events/year
+across the universe — ~7 re-pulls on an average trading day. 25% of annual events fall in
+July–August (March-FY dividend season), so peak days run ~20–40. **A ~99.7% reduction in
+deep pulls versus re-pulling everything.**
+
+Reproducible via `probe_corporate_actions.py`. Re-runs at different sample sizes agree
+closely on the annual rate (0.79 and 0.91 events/stock/year) but diverge on the peak-day
+figure (~20 vs ~40) — seasonal concentration is the noisy statistic here, so the job should
+be paced for the upper end rather than the average. Even 40 deep pulls is under 2% of the
+universe.
+
+#### Why one month, not one day
+
+The daily sweep deliberately fetches ~22 bars rather than the single new one, because
+**Yahoo throttles on request count, not payload**. 2,138 requests is 2,138 requests whether
+each returns 1 bar or 22, so the wider window is free in the only currency that matters —
+and buys three things a 1-day window cannot: self-healing after a failed night, safety
+across weekends and exchange holidays, and ~21 bars of overlap with stored history, which
+is what makes the second detector below possible.
+
+#### Two detectors, not one
+
+A flagged instrument is one where **either** fires. Both run on data already in the daily
+sweep's response, so detection costs nothing beyond the sweep itself.
+
+1. **Explicit events.** The chart endpoint accepts `?events=div,splits` and returns dated
+   dividend and split records. Verified against the live API: a 30-day window placed around
+   RELIANCE's 2026-06-05 dividend returned that dividend; a window containing no event
+   returns an empty `events` object rather than erroring. This tells us *why* history moved.
+
+2. **Overlap comparison — the backstop that makes this safe.** ~21 of the fetched bars
+   overlap dates we already store. Compare stored `adjclose` against freshly-fetched
+   `adjclose` for the same date; any mismatch beyond float epsilon means the series has been
+   restated. This is a direct observation, not a heuristic, and it tells us *whether*
+   history moved regardless of cause — a late or incomplete event record, an event that
+   landed during an outage, or Yahoo silently correcting a bad bar.
+
+**Detector 1 alone is not sufficient, and this is the crux of the design.** A missed
+restatement is silent and permanent: the corrupted history is perfectly well-formed, so
+nothing downstream complains. Measured across 46 instruments, the restatement applied to a
+one-year-old bar runs **median 0.27%, p90 1.53%, max 3.68%**, with 9 of 46 above 1%. The
+median looks ignorable but is not noise — it is a *step discontinuity* at the join point,
+and it compounds with every event missed. It is also systematic in one direction: MA200
+averages old, unrestated bars while price is current, so the instrument reads weaker than
+it is. High-dividend names would quietly stop clearing gate 1 and nothing would indicate
+why. §4.3's whole model sits on exactly these comparisons.
+
+#### Escalation and residual risk
+
+- If an outage leaves a watermark gap **longer than the sweep window**, the sweep cannot
+  bridge it. That instrument escalates to a deep re-pull automatically rather than being
+  appended across a hole.
+- **Quarterly full re-pull stays in place** as a backup check, explicitly *not* made
+  redundant. Detector 2 makes the daily process far stronger than the 60-day window it
+  replaces, but the quarterly pull remains the only thing that verifies the parts of
+  history no daily window ever touches.
+- *Residual risk, stated rather than assumed away:* there is still no way to verify from
+  here how promptly Yahoo reflects a corporate action for smaller Indian listings. Detector
+  2 narrows this materially — it fires on the restatement itself rather than on Yahoo's
+  metadata about it — but a restatement Yahoo never applies at all is invisible to both
+  detectors, and only the quarterly pull and eventual real-world reconciliation would catch
+  it.
+
+#### Timing (locked)
+
+NSE regular session is **03:45–10:00 UTC (09:15–15:30 IST)**, read from the API's own
+`currentTradingPeriod` rather than assumed.
+
+- **Sweep runs 14:30 UTC / 20:00 IST** — 4.5 hours after close, well clear of settlement.
+  The workbook publishes by ~21:00 IST, hours before the next open.
+- **Retries at 16:30 and 18:30 UTC** (22:00 and 00:00 IST). The 1-month window makes a
+  retry naturally idempotent — it overwrites rather than appends.
+- Total daily load ~2,145 requests at ~0.25s spacing, roughly **9 minutes**.
+- *Known tradeoff:* 14:30 UTC falls inside US market hours, when Yahoo is busiest. If the
+  logs show throttling, the lever is moving the sweep to ~20:30 UTC (02:00 IST, after the
+  US close) — still hours before the Indian open. Start at 20:00 IST; move only on
+  evidence, not pre-emptively.
 
 ### 3.6 Fundamentals
 - **Frequency:** annual, refreshed automatically around **June 30**, with an email
@@ -721,7 +796,9 @@ and fixed in Meridian's own logic (§7.2).
 ### 6.3 Pipeline (nightly + quarterly)
 ```
 Fetch (Yahoo Finance)
-  → 60-trading-day corporate-action reconciliation (§3.5)
+  → detect corporate actions (events + overlap comparison, §3.5)
+  → deep re-pull, flagged instruments only (~7/day)
+  → clean_price_calendar.py
   → Compute (Node.js, reusing Meridian's JS engine)
   → Write to output tables
   → Build the workbook   (build_workbook.mjs → build_workbook.py)
@@ -1015,7 +1092,46 @@ A true daily incremental job needs a fundamentally different design:
   not advance the watermark, so the next run naturally retries the missed day. This is
   the single most important correctness property for the daily job.
 - **Idempotent writes** (upsert by ISIN+Date), not blind append.
-- The 60-trading-day corporate-action reconciliation window (§3.5) layered on top.
+- The detect-and-isolate reconciliation of §3.5 layered on top.
+
+**Implementation contract (locked 2026-09-07, per §3.5).** The job is two passes, not one:
+
+```
+PASS 1 — sweep, every instrument, range=1mo&events=div,splits   (~2,138 requests)
+   for each instrument:
+     upsert the bars newer than the watermark
+     flag if  events{} is non-empty
+     flag if  any overlapping date's stored adjclose != fetched adjclose
+     flag if  watermark gap exceeds the window (the sweep cannot bridge it)
+     advance the watermark ONLY on success
+
+PASS 2 — deep re-pull, flagged instruments only, 5y            (~7 requests, ~20 at peak)
+   overwrite that instrument's entire stored series
+   clear the flag only after the overwrite commits
+```
+
+Details that are load-bearing rather than incidental:
+
+- **A failure must never advance the watermark.** This is the single most important
+  correctness property in the job. "No new data" (holiday, halted scrip) and "fetch failed"
+  are different outcomes and must not share a code path — conflating them freezes an
+  instrument's history while every dashboard stays green. This is what made the older Colab
+  scripts unusable unattended (§7.1).
+- **The overlap comparison runs on `adjclose`, not `close`.** Raw close does not move when a
+  dividend or split is applied, so comparing it would detect nothing. This is the same
+  distinction that caused the first backfill to come out 2% wrong (§9 item 0a) — the
+  detector depends on precisely the field that bug was about.
+- **Compare with an epsilon, not `!=`.** Yahoo returns floats; a bit-exact comparison would
+  flag the entire universe every night. The threshold should be relative, not absolute — a
+  fixed epsilon means something different for a ₹12 scrip than a ₹90,000 one.
+- **Flags are persisted, not in-memory.** If pass 2 dies halfway, the survivors must still
+  be re-pulled on the next run rather than silently dropped.
+- **`clean_price_calendar.py` runs after both passes**, not just after a backfill. Phantom
+  holiday bars from a few BSE tickers NaN out every rolling window and collapsed the
+  backtest from 459 episodes to 21 (§9 item 0a). Nothing about incremental fetching makes
+  that trap go away.
+- **Deep re-pulls overwrite, never merge.** The point of a re-pull is that the stored series
+  is known-wrong; merging would preserve the very rows being corrected.
 
 **Decided 2026-09-07: nothing fetches until the accounts exist.** The repository holds a
 static snapshot as of 2026-09-04, and it goes one trading day more stale each day until
@@ -1045,7 +1161,10 @@ For quick reference; each item traces to a fuller explanation above.
 - [x] Sectoral: derived compute on the granular Industry Name field (127 categories, in
       the `Sector` column; changed 2026-09-06 from the 29-category field), not separately
       maintained
-- [x] Daily price job: incremental + 60-day corporate-action reconciliation window
+- [x] Daily price job: 1-month sweep for all + 5-year deep re-pull for instruments flagged
+      by either detector (explicit events, or overlap `adjclose` mismatch) — §3.5.
+      *Supersedes the earlier 60-day-window-for-everyone lock, 2026-09-07*
+- [x] Daily sweep runs 14:30 UTC / 20:00 IST, retries 16:30 and 18:30 UTC — §3.5
 - [x] Quarterly full re-pull retained as backup check, not redundant with daily job
 - [x] Compute: backend, Node.js, reusing Meridian's existing JS functions unmodified
 - [x] Meridian: pure display/filter layer in production, zero compute
@@ -1311,6 +1430,7 @@ be the authoritative list of what belongs in the GitHub repository.
 | Output | `meridian-engine.js` | **The computation engine** — all 22 pure functions, imported by both `meridian.jsx` and the production pipeline so neither holds a copy (§6.2) |
 | Tooling | `check_data_integrity.py` | Fast guards over the committed data — every assertion corresponds to a bug that actually happened (float BSE codes, phantom trading days, non-positive adjusted prices). Run in CI on every push |
 | Tooling | `.github/workflows/` | `data-integrity.yml` (every push), `port-parity.yml` and `workbook.yml` (both path-scoped) |
+| Tooling | `probe_corporate_actions.py` | Measures corporate-action frequency and restatement magnitude against the live API — the evidence §3.5's detect-and-isolate design is sized from. Re-run if the universe changes materially |
 | Tooling | `requirements.txt` | Python dependencies. Its absence is why every CI run from 2026-09-06 to 2026-09-07 failed before reaching a single check — see §9 item 0c |
 | Tooling | `verify_port.mjs` + `verify_port.py` | Port parity check: runs the Node engine and the Python backtest over the same history and fails on any divergence in the candidate set |
 | Tooling | `clean_price_calendar.py` | Strips phantom trading days (holiday bars from a few BSE tickers) that silently NaN out every rolling window. Must run after any bulk fetch — see §9 item 0a |
