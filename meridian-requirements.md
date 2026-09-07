@@ -1520,6 +1520,7 @@ be the authoritative list of what belongs in the GitHub repository.
 | Tooling | `check_data_integrity.py` | Fast guards over the committed data — every assertion corresponds to a bug that actually happened (float BSE codes, phantom trading days, non-positive adjusted prices). Run in CI on every push |
 | Tooling | `.github/workflows/` | `data-integrity.yml` (every push), `port-parity.yml` and `workbook.yml` (both path-scoped) |
 | Tooling | `probe_corporate_actions.py` | Measures corporate-action frequency and restatement magnitude against the live API — the evidence §3.5's detect-and-isolate design is sized from. Re-run if the universe changes materially |
+| Tooling | `verify_deploy.sql` | Read-only check that a live Supabase deployment matches §6.6 — run in the SQL Editor after applying the schema, since "Success. No rows returned" says nothing about what was created |
 | Tooling | `verify_rls.sql` | Executes `supabase-schema.sql` against a real Postgres 16 and asserts the §6.6 access model — 30 expectations, negative-tested. Runs in CI |
 | Tooling | `requirements.txt` | Python dependencies. Its absence is why every CI run from 2026-09-06 to 2026-09-07 failed before reaching a single check — see §9 item 0c |
 | Tooling | `verify_port.mjs` + `verify_port.py` | Port parity check: runs the Node engine and the Python backtest over the same history and fails on any divergence in the candidate set |
