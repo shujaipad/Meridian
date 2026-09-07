@@ -1,0 +1,49 @@
+name: rls
+
+# Proves supabase-schema.sql's Row Level Security enforces what §6.6 claims,
+# against a real Postgres 16 (the version Supabase runs).
+#
+# This one guards the failure mode with the worst consequences and the least
+# noise: a missing GRANT is loud and obvious the first time someone hits it, but
+# an over-broad one is silent — the app works perfectly while exposing more than
+# it should. Reading the DDL is not enough to tell those apart.
+#
+# The expectations were negative-tested rather than merely run green: leaking an
+# operational log to authenticated users, flipping the workbook bucket to public,
+# and widening the consent read policy to `using (true)` each fail the run with
+# the matching error. A guard that cannot fail is worthless.
+on:
+  push:
+    branches: [main]
+    paths:
+      - supabase-schema.sql
+      - verify_rls.sql
+      - .github/workflows/rls.yml
+  pull_request:
+    paths:
+      - supabase-schema.sql
+      - verify_rls.sql
+      - .github/workflows/rls.yml
+  workflow_dispatch:
+
+jobs:
+  rls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+        ports: ["5432:5432"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify RLS
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -c "create database rls_check;"
+          psql -h localhost -U postgres -d rls_check -v ON_ERROR_STOP=1 -f verify_rls.sql

@@ -910,6 +910,34 @@ with the project's cost/ops priorities throughout. Not yet built.
 default — left as-is, a thin frontend querying Supabase directly would be open to
 anyone with the URL. This was explicitly identified and closed, not an oversight.
 
+**Verified by execution, 2026-09-07 — not by reading the DDL.** The schema was written
+and locked in September without ever being run. It now applies cleanly to a real
+Postgres 16 (the version Supabase runs), and `verify_rls.sql` asserts **30 expectations**
+against it, one per claim made below:
+
+- `anon` — the key that ships in the browser bundle — is denied on every table, including
+  `user_consent`. With no session, the public key reads nothing at all.
+- `authenticated` reads exactly the seven display tables and is denied on
+  `fundamentals_annual`, `fetch_job_log` and `universe_change_log`. "No policy therefore
+  denied" is a fair reading of the DDL, and still worth proving, because the failure
+  direction is silent: a *missing* grant is loud the first time anyone hits it, an
+  *over-broad* one never announces itself.
+- `authenticated` cannot INSERT, UPDATE or DELETE anywhere. `service_role` is the only
+  writer, by omission of any write policy rather than by an explicit rule someone could
+  later loosen.
+- `user_consent` is owner-scoped in both directions: a user writes their own row, is
+  refused when writing another's, sees one row where two exist, and an UPDATE aimed at
+  another user's row matches nothing. They cannot DELETE even their own row — removal is
+  via the `on delete cascade` from `auth.users`, so deleting the account removes the
+  consent record rather than the app doing it piecemeal.
+- The `workbooks` bucket exists, is private, and `storage.objects` carries exactly one
+  SELECT policy and no write policy.
+
+**The expectations were negative-tested, not merely run green.** Leaking `fetch_job_log`
+to authenticated users, flipping the workbook bucket to `public = true`, and widening the
+consent read policy to `using (true)` each fail the run with the matching error. Wired
+into CI as `rls.yml`, path-scoped to the schema and the test.
+
 **RLS policies (locked, 2026-09-05):** full design in `supabase-schema.sql`. Default-deny
 on every table (RLS enabled everywhere); `authenticated` gets read-only `SELECT` on the
 tables Meridian's UI displays (`universe`, `prices_daily`, `technicals_daily`,
@@ -1255,6 +1283,7 @@ For quick reference; each item traces to a fuller explanation above.
       universe inclusion (§3.1), IPOs/short-history scrips excluded outright
 - [x] Frontend hosting: Vercel, free tier
 - [x] Notification email provider: Resend, free tier
+- [x] Schema and RLS verified by execution, not by reading — `verify_rls.sql`, §6.6
 - [x] Full tooling & infrastructure list: §6.8
 - [x] Sign-in method per account: GitHub for Vercel and Supabase, email + independent 2FA
       for DigitalOcean and the domain registrar — §6.8
@@ -1491,6 +1520,7 @@ be the authoritative list of what belongs in the GitHub repository.
 | Tooling | `check_data_integrity.py` | Fast guards over the committed data — every assertion corresponds to a bug that actually happened (float BSE codes, phantom trading days, non-positive adjusted prices). Run in CI on every push |
 | Tooling | `.github/workflows/` | `data-integrity.yml` (every push), `port-parity.yml` and `workbook.yml` (both path-scoped) |
 | Tooling | `probe_corporate_actions.py` | Measures corporate-action frequency and restatement magnitude against the live API — the evidence §3.5's detect-and-isolate design is sized from. Re-run if the universe changes materially |
+| Tooling | `verify_rls.sql` | Executes `supabase-schema.sql` against a real Postgres 16 and asserts the §6.6 access model — 30 expectations, negative-tested. Runs in CI |
 | Tooling | `requirements.txt` | Python dependencies. Its absence is why every CI run from 2026-09-06 to 2026-09-07 failed before reaching a single check — see §9 item 0c |
 | Tooling | `verify_port.mjs` + `verify_port.py` | Port parity check: runs the Node engine and the Python backtest over the same history and fails on any divergence in the candidate set |
 | Tooling | `clean_price_calendar.py` | Strips phantom trading days (holiday bars from a few BSE tickers) that silently NaN out every rolling window. Must run after any bulk fetch — see §9 item 0a |
