@@ -20,6 +20,7 @@ on:
       - meridian_backtest.py
       - verify_port.mjs
       - verify_port.py
+      - requirements.txt
       - "meridian-price-history-2090-part*of3.csv"
       - meridian-company-master-2138.csv
       - .github/workflows/port-parity.yml
@@ -29,6 +30,7 @@ on:
       - meridian_backtest.py
       - verify_port.mjs
       - verify_port.py
+      - requirements.txt
       - "meridian-price-history-2090-part*of3.csv"
       - meridian-company-master-2138.csv
       - .github/workflows/port-parity.yml
@@ -48,7 +50,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install pandas numpy
+      - run: pip install -r requirements.txt
 
       # The engine has no dependencies — it is deliberately plain JS operating on
       # arrays, which is exactly what lets the pipeline import it unchanged.

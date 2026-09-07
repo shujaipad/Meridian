@@ -1232,6 +1232,22 @@ For quick reference; each item traces to a fuller explanation above.
 7. **PostHog event instrumentation is not yet scoped.** Which specific actions get
    tracked (which tabs, which interactions) beyond the automatic visitor/time-on-site
    metrics has not been defined — a real, small design task, not just a config setting.
+0c. **~~Every CI run had failed since CI was added~~ — FIXED 2026-09-07.** Checked five
+   runs after wiring the workflows in; all five were red. The cause was in neither the
+   data nor the model: both workflows pass `cache: pip` to `actions/setup-python`, which
+   **errors out when there is no `requirements.txt` or `pyproject.toml` to hash**. The
+   failure happens during setup, so `check_data_integrity.py` and `verify_port` never
+   executed once. Five red badges that said nothing at all about the repository.
+
+   Worth recording as a lesson rather than just a fix: a check that fails for its own
+   reasons is *worse* than no check, because the red is indistinguishable from a real
+   finding and stops being read. Adding the workflows was reported as done at the time on
+   the strength of the scripts passing locally — the runs themselves were never opened.
+
+   Fixed by adding `requirements.txt` (which the repository lacked entirely, and should
+   have had regardless) rather than by dropping the cache. Both guards verified passing
+   locally against the committed data before the fix was pushed.
+
 8. **~~The Excel workbook is well behind the dashboard~~ — RESOLVED 2026-09-07.**
    The decision this item asked for ("whether the workbook remains a live deliverable or
    is retired") was taken: **it stays alive, rebuilt rather than patched.** Bringing the
@@ -1278,7 +1294,8 @@ be the authoritative list of what belongs in the GitHub repository.
 | Tooling | `fetch_prices.py` | The bulk historical fetcher (§3.4's one-time backfill and quarterly re-pull). Not the daily incremental job, which is separate engineering (§7.3) |
 | Output | `meridian-engine.js` | **The computation engine** — all 22 pure functions, imported by both `meridian.jsx` and the production pipeline so neither holds a copy (§6.2) |
 | Tooling | `check_data_integrity.py` | Fast guards over the committed data — every assertion corresponds to a bug that actually happened (float BSE codes, phantom trading days, non-positive adjusted prices). Run in CI on every push |
-| Tooling | `.github/workflows/` | `data-integrity.yml` (every push) and `port-parity.yml` (path-scoped to engine/backtest/data) |
+| Tooling | `.github/workflows/` | `data-integrity.yml` (every push), `port-parity.yml` and `workbook.yml` (both path-scoped) |
+| Tooling | `requirements.txt` | Python dependencies. Its absence is why every CI run from 2026-09-06 to 2026-09-07 failed before reaching a single check — see §9 item 0c |
 | Tooling | `verify_port.mjs` + `verify_port.py` | Port parity check: runs the Node engine and the Python backtest over the same history and fails on any divergence in the candidate set |
 | Tooling | `clean_price_calendar.py` | Strips phantom trading days (holiday bars from a few BSE tickers) that silently NaN out every rolling window. Must run after any bulk fetch — see §9 item 0a |
 | Input | `meridian-fundamentals-742.csv` | Real Equities fundamentals |
@@ -1569,6 +1586,13 @@ fails on any Excel error cell, then asserts 44 values against
 JSON rather than read back from the sheet, so a range that points one column or
 one row off is caught. `scalar()` exists because `formulas` returns `Ranges`
 wrapping numpy arrays rather than plain values.
+
+**CI (`workbook.yml`)** — runs the same three steps the nightly pipeline runs
+before publishing, path-scoped to the engine, the builders and the data. ~3
+minutes. A green run means the publish step will not be the thing that breaks at
+2am, which matters more here than for a normal build check: the workbook is read
+away from the app, so a wrong number in it has no dashboard beside it to
+contradict it.
 
 **`publish_workbook.mjs`** — uploads to Supabase Storage under
 `daily/meridian-<as-of>.xlsx` and `daily/latest.xlsx`, then prunes past 90 days.

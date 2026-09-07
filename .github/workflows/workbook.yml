@@ -1,0 +1,95 @@
+name: workbook
+
+# Builds the daily workbook and verifies every formula in it (§2.2).
+#
+# This is the same three-step sequence the nightly pipeline runs before it
+# publishes (§6.3), so a green run here means the publish step will not be the
+# thing that breaks at 2am. It matters more than a normal build check because the
+# workbook is a deliverable people read away from the app: a wrong number in it
+# has no dashboard next to it to contradict it.
+#
+# verify_workbook.py stands in for the xlsx skill's recalc.py, which cannot run
+# here or in the build container — LibreOffice starts but cannot load a document
+# of any kind, so its macro dispatch hangs (§2.2.2). The replacement is stronger
+# in the way that counts: as well as evaluating every formula, it asserts 44
+# values against the engine's own JSON output rather than reading them back out
+# of the sheet, so a range pointing one column off is caught. That is exactly the
+# bug it found on its first run, and one a clean recalc would have passed.
+#
+# Path-scoped: it only means anything when the model, the builders, or the data
+# underneath them changes.
+on:
+  push:
+    branches: [main]
+    paths:
+      - meridian-engine.js
+      - build_workbook.mjs
+      - build_workbook.py
+      - verify_workbook.py
+      - publish_workbook.mjs
+      - requirements.txt
+      - "meridian-price-history-2090-part*of3.csv"
+      - meridian-company-master-2138.csv
+      - meridian-fundamentals-742.csv
+      - .github/workflows/workbook.yml
+  pull_request:
+    paths:
+      - meridian-engine.js
+      - build_workbook.mjs
+      - build_workbook.py
+      - verify_workbook.py
+      - publish_workbook.mjs
+      - requirements.txt
+      - "meridian-price-history-2090-part*of3.csv"
+      - meridian-company-master-2138.csv
+      - meridian-fundamentals-742.csv
+      - .github/workflows/workbook.yml
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      # Stage 1 holds the whole price history in memory to run the engine over it.
+      - name: Compute every screen with the engine
+        run: node --max-old-space-size=6144 build_workbook.mjs
+
+      - name: Format the workbook
+        run: python3 build_workbook.py
+
+      - name: Verify every formula and value
+        run: python3 verify_workbook.py
+
+      # The build is deterministic given the committed data, so a workbook that
+      # differs from the one in the repository means the engine's output moved.
+      # Worth seeing rather than worth failing on — the committed copy is a dated
+      # reference build, not a lockfile.
+      - name: Note whether the committed workbook is stale
+        if: always()
+        run: |
+          if git diff --quiet -- meridian.xlsx; then
+            echo "committed meridian.xlsx matches this build"
+          else
+            echo "::notice::meridian.xlsx differs from this build — the committed copy is a dated reference, not a lockfile"
+          fi
+
+      - name: Keep the workbook on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workbook
+          path: |
+            meridian.xlsx
+            workbook-data.json

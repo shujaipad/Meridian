@@ -1,0 +1,17 @@
+# Python dependencies for the repository's scripts and CI.
+#
+# This file's absence is why every CI run from 2026-09-06 to 2026-09-07 failed:
+# both workflows pass `cache: pip` to actions/setup-python, which errors out when
+# it cannot find a requirements.txt or pyproject.toml to hash. The failure happens
+# during setup, so neither check_data_integrity.py nor verify_port ever executed —
+# five red runs that said nothing about the data or the model.
+#
+# Lower bounds, not pins: these scripts use long-stable APIs, and pinning would
+# mean the guards silently stop tracking the environment the pipeline actually
+# runs in.
+
+pandas>=2.0        # every data script; the backtest leans on it heavily
+numpy>=1.24        # meridian_backtest.py
+openpyxl>=3.1      # build_workbook.py
+formulas>=1.3      # verify_workbook.py — evaluates the workbook in pure Python,
+                   # standing in for LibreOffice (see §2.2.2)
