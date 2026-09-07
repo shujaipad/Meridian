@@ -35,8 +35,12 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: postgres
+        # -U postgres on the health check: pg_isready otherwise defaults to the
+        # runner's own username and logs five FATAL "role root does not exist"
+        # lines into every green run. Retries covered it, but permanent noise in a
+        # passing log is how a real failure gets missed later.
         options: >-
-          --health-cmd pg_isready --health-interval 5s
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
           --health-timeout 5s --health-retries 10
         ports: ["5432:5432"]
     steps:
