@@ -229,9 +229,45 @@ revoke all on all functions in schema public from anon, authenticated;
 
 -- Stop NEW tables from inheriting the same. Without this, the next migration
 -- silently re-opens everything it creates.
-alter default privileges in schema public revoke all on tables from anon, authenticated;
-alter default privileges in schema public revoke all on sequences from anon, authenticated;
-alter default privileges in schema public revoke all on functions from anon, authenticated;
+--
+-- ALTER DEFAULT PRIVILEGES only affects defaults created by the role running it,
+-- and Supabase sets its own as `supabase_admin`, not as `postgres`. A plain
+-- `alter default privileges ... revoke` therefore succeeds, reports nothing, and
+-- changes nothing -- which is exactly what happened on the first deployment: the
+-- grants cleared, three default-privilege entries survived, and the file still
+-- said "Success". So discover the owning role rather than assuming it.
+--
+-- Wrapped so a refusal cannot abort the whole apply. `postgres` on a managed
+-- instance may not be a member of the role that set these. That is survivable:
+-- the REVOKEs above run on every apply, so any table this file creates ends up
+-- correct regardless. What a leftover default ACL affects is a table created by
+-- some FUTURE migration that forgets to revoke -- so the warning below is a real
+-- instruction, not noise.
+do $defacl$
+declare r record; n int := 0;
+begin
+  for r in
+    select pg_get_userbyid(d.defaclrole) as role_name,
+           case d.defaclobjtype when 'r' then 'TABLES' when 'S' then 'SEQUENCES'
+                when 'f' then 'FUNCTIONS' when 'T' then 'TYPES' end as objtype
+    from pg_default_acl d
+    join pg_namespace ns on ns.oid = d.defaclnamespace
+    where ns.nspname = 'public'
+      and array_to_string(d.defaclacl, ',') ~ '(^|,)(anon|authenticated)='
+  loop
+    begin
+      execute format(
+        'alter default privileges for role %I in schema public revoke all on %s from anon, authenticated',
+        r.role_name, r.objtype);
+      raise notice 'cleared default % privileges set by role %', r.objtype, r.role_name;
+      n := n + 1;
+    exception when insufficient_privilege then
+      raise warning 'COULD NOT clear default % privileges set by role % -- every future migration MUST revoke explicitly after creating tables',
+        r.objtype, r.role_name;
+    end;
+  end loop;
+  if n = 0 then raise notice 'no default privileges for anon/authenticated to clear'; end if;
+end $defacl$;
 
 -- ============================================================================
 -- TABLE-LEVEL GRANTS -- PostgREST (Supabase's API layer) also checks plain

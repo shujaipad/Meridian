@@ -53,11 +53,23 @@ create or replace function auth.role() returns text language sql stable as
 -- environment that does not exist -- it passed while the real deployment had 77
 -- grants to anon. Model the platform's defaults BEFORE applying the schema, so the
 -- schema has to revoke them the way it must in production.
+do $r$
+begin
+  create role supabase_admin superuser; exception when duplicate_object then null;
+end $r$;
 grant usage on schema public to anon, authenticated, service_role;
 grant all privileges on all tables in schema public to anon, authenticated, service_role;
 grant all privileges on all sequences in schema public to anon, authenticated, service_role;
+-- Set the default privileges AS supabase_admin, which is what a managed project
+-- actually does. This is the second half of the same lesson: the first fix revoked
+-- them as `postgres`, which succeeded, reported nothing, and cleared nothing,
+-- because ALTER DEFAULT PRIVILEGES only touches defaults created by the role
+-- running it. Modelling the owning role is what makes this test able to fail.
+set role supabase_admin;
 alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
 alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
+alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
+reset role;
 
 \echo '--- applying supabase-schema.sql ---'
 \i supabase-schema.sql

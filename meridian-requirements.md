@@ -937,9 +937,30 @@ production, and asserts the grant layer directly (anon holds zero privileges;
 Negative-tested by restoring the pre-fix schema: it now fails on the first check.
 
 **Fixed in `supabase-schema.sql`** by revoking tables, sequences and functions from both
-public roles — and the matching `alter default privileges` — *before* granting, so the file
-produces the same end state on a clean database or a live Supabase project. Re-runnable
-safely. `verify_deploy.sql` gained a default-privileges row.
+public roles — and the matching default privileges — *before* granting, so the file produces
+the same end state on a clean database or a live Supabase project. Re-runnable safely.
+`verify_deploy.sql` gained a default-privileges row.
+
+**The fix needed a second pass, and the reason is worth keeping.** The first attempt used a
+plain `alter default privileges in schema public revoke all on tables from anon,
+authenticated`. On the live project it **succeeded, reported nothing, and changed nothing** —
+three default-privilege entries survived. `ALTER DEFAULT PRIVILEGES` only affects defaults
+created *by the role running it*, and Supabase sets its own as **`supabase_admin`**, not as
+the `postgres` role the SQL Editor runs as. The diagnostic showed
+`anon=arwdDxt/supabase_admin` on tables: every privilege, as the default for every future
+table. The schema now discovers the owning role from `pg_default_acl` and revokes as that
+role, wrapped so a refusal downgrades to a `WARNING` rather than aborting the apply —
+`postgres` on a managed instance may not be a member of that role.
+
+*If that warning ever appears*, the residual risk is bounded and specific: this file's own
+REVOKEs run on every apply, so anything it creates is correct regardless. What a leftover
+default ACL affects is a table created by some **future migration that forgets to revoke** —
+so every migration must end with the same revoke block.
+
+`verify_rls.sql` models both halves: platform grants pre-applied, and default privileges set
+*by a distinct role*. Negative-tested twice — removing the revoke block fails on the first
+anon check, removing the default-ACL block fails with "default privileges still grant to
+anon/authenticated in public (3 entries)".
 
 **Verified by execution, 2026-09-07 — not by reading the DDL.** The schema was written
 and locked in September without ever being run. It now applies cleanly to a real
