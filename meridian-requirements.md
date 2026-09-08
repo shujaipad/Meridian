@@ -1156,6 +1156,28 @@ supply. Once accounts exist and credentials (API keys, connection strings) are s
 environment variables, all subsequent configuration, schema deployment, and code work
 is Claude Code's to do.
 
+#### Region (locked 2026-09-07)
+
+**Supabase: South Asia (Mumbai), `ap-south-1`. DigitalOcean: Bangalore, `BLR1`.**
+
+Users and usage are in India, mostly Mumbai. §6.2 makes Meridian a pure display layer —
+the browser reads Supabase directly on every screen, with no server in between — so
+database round-trip latency is felt on every interaction rather than hidden behind an API.
+From India that is roughly **5–30 ms to Mumbai against 150–180 ms to Sydney**: a 5–10×
+difference on every query, and the Stocks screen fires several. Vercel serves the frontend
+from a global CDN either way, so this is purely the database hop.
+
+The first project was created in Oceania (Sydney) and **moved before any data was loaded**.
+Supabase cannot move a project between regions — it means creating a new one — so the cost
+was ten minutes of re-running `supabase-schema.sql` and its two verification queries against
+an empty database. After the 2.1M-row load it would have been a data migration. Worth
+recording as a sequencing lesson: region is decided at project creation, and the only cheap
+moment to revisit it is before the first load.
+
+DigitalOcean's Indian region is Bangalore (`BLR1`), ~20–30 ms from Mumbai. Latency matters
+far less for the VPS than for the browser — the nightly job writes ~2,100 rows on an ordinary
+day (§3.5) — but there is no reason to pay for distance that costs nothing to avoid.
+
 #### Sign-in method per account (locked 2026-09-07)
 
 Not a cosmetic preference. GitHub OAuth across every service would make one account a
@@ -1362,6 +1384,7 @@ For quick reference; each item traces to a fuller explanation above.
 - [x] Frontend hosting: Vercel, free tier
 - [x] Notification email provider: Resend, free tier
 - [x] Schema and RLS verified by execution, not by reading — `verify_rls.sql`, §6.6
+- [x] Region: Supabase Mumbai `ap-south-1`, DigitalOcean Bangalore `BLR1` — §6.8
 - [x] Full tooling & infrastructure list: §6.8
 - [x] Sign-in method per account: GitHub for Vercel and Supabase, email + independent 2FA
       for DigitalOcean and the domain registrar — §6.8
