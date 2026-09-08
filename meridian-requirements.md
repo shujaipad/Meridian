@@ -1156,6 +1156,32 @@ supply. Once accounts exist and credentials (API keys, connection strings) are s
 environment variables, all subsequent configuration, schema deployment, and code work
 is Claude Code's to do.
 
+#### Deployment status (2026-09-08)
+
+**Supabase is live and carries the full dataset.** Project in Mumbai (`ap-south-1`),
+schema applied from `supabase-schema.sql` with all ten `verify_deploy.sql` rows matching
+on a fresh project and no manual fixes — which is what finally demonstrated the file is
+self-sufficient rather than dependent on the corrections it took three attempts to get
+right.
+
+Loaded via `load_supabase.mjs` and verified by `verify_load.sql`, **12 of 12 rows
+matching**:
+
+| | |
+|---|---|
+| universe | 2,138 instruments, 2,138 distinct ISINs |
+| prices_daily | **2,140,491 rows**, 2,089 instruments, 2021-09-06 → 2026-09-04 |
+| fundamentals_annual | 6,477 rows, 1,648 instruments |
+| clearing the §3.1 200-bar rule | 1,980 |
+| revised-ISIN companies carrying fundamentals | 3 of 3 |
+
+**3.6 minutes**, against the 15–40 estimated. A direct dividend of the region decision
+below: the same load to Sydney would have paid ~150 ms of latency on each of ~2,150
+batched requests.
+
+Still to come: DigitalOcean (the nightly job has nowhere to run yet), PostHog, Resend, the
+domain, and the production frontend.
+
 #### Region (locked 2026-09-07)
 
 **Supabase: South Asia (Mumbai), `ap-south-1`. DigitalOcean: Bangalore, `BLR1`.**

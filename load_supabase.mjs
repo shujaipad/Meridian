@@ -28,6 +28,21 @@
  *   * FAILURES ARE LOUD. A failed batch aborts with the server's message and the
  *     progress file left intact. It never advances past a batch it could not
  *     write -- the same rule the daily job lives by (§7.3).
+ *
+ * Windows notes, from the first real run (2026-09-08):
+ *
+ *   * `npm i` fails with "running scripts is disabled on this system". That is
+ *     PowerShell's default execution policy refusing npm's .ps1 shim, not a
+ *     problem with npm or the machine. Use `npm.cmd i @supabase/supabase-js`,
+ *     which sidesteps it without changing any system setting.
+ *   * Environment variables are set with `$env:NAME="value"`, and live only in
+ *     that PowerShell window.
+ *   * Confirm the key took without printing it: `$env:SUPABASE_SERVICE_ROLE_KEY.Length`
+ *     should be a few hundred characters.
+ *
+ * Measured on the first real run: 2,140,491 price rows in 3.6 minutes to Supabase
+ * Mumbai from an Indian connection -- comfortably inside the 15-40 minutes
+ * estimated, and a direct dividend of the region choice (§6.8).
  */
 
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
