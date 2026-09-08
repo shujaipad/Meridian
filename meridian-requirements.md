@@ -1686,7 +1686,11 @@ be the authoritative list of what belongs in the GitHub repository.
 | Input | `meridian-currencies-master.csv` | Real, verified universe (27 instruments) — new asset class; no price file yet, synthetic or real |
 | Input | `meridian-indices-master.csv` | Real, verified universe (23 instruments) — `-prices-sample.csv` remains synthetic, real price history not yet sourced |
 | Input | `meridian-crypto-master.csv` | Real, verified universe (26 instruments) — `-prices-sample.csv` remains synthetic, real price history not yet sourced |
-| Output | `meridian.jsx` | The application |
+| Output | `meridian.jsx` | **The application** — one interface for both prototype and production. Given a `dataset` prop it renders what the pipeline published; given nothing it uploads CSVs and computes in-browser as before |
+| Output | `web/` | The production shell: Supabase client, invite-only auth, the row-shaping layer, and Vercel config. Imports `meridian.jsx` unmodified rather than reimplementing it |
+| Tooling | `compute_and_publish.mjs` | Runs the engine and writes the five screen tables — the compute half of the nightly job, run by hand until the VPS exists |
+| Tooling | `verify_screens.sql` | Post-publish check: 16 counts against the workbook's figures, including a gate funnel rebuilt from the published columns |
+| Tooling | `web/check-production.mjs` | Drives the built app in a real browser against a fixture of the exact rows Supabase holds — every screen, from database rows, without credentials |
 | Output | `meridian.xlsx` | **The workbook** (§2.2) — 8 sheets, generated from the engine, published daily to Supabase Storage. The committed copy is the 2026-09-04 build kept as a reference; daily copies live in Storage, not in git |
 | Tooling | `build_workbook.mjs` | Stage 1 — computes every screen via `meridian-engine.js`, emits `workbook-data.json` |
 | Tooling | `build_workbook.py` | Stage 2 — formats that JSON into `meridian.xlsx` with openpyxl |

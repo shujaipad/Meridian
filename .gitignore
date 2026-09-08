@@ -16,3 +16,10 @@ workbook-data.json
 dryrun/
 dryrun-progress.json
 load_supabase_progress.json
+
+# Production web app — build output, deps, and the local test fixture
+web/node_modules/
+web/dist/
+web/fixture/
+web/shots/
+dryrun-screens/

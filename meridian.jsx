@@ -1280,7 +1280,20 @@ function MarketBreadthScreen({ series }) {
 }
 
 // ---------- Main App ----------
-export default function App() {
+// `dataset` is how production feeds this component (§6.2). Passed nothing, App
+// behaves as it always has: upload CSVs, compute everything in the browser — which
+// is what the prototype and the preview harness still do. Passed a dataset, it skips
+// every computation and renders what it was handed.
+//
+// This seam exists so there is exactly ONE Meridian interface. The alternative was a
+// second production UI reading from Supabase, which is the duplicate-implementation
+// trap §7.2 rejects and the old workbook demonstrated: two copies of the same logic
+// drift, and the drift is silent. Here the production app IS this file, wrapped.
+//
+// A dataset supplies the five derived values the screens consume, already computed
+// by the pipeline: computed, breadthSeries, goldenBreakoutCandidates,
+// sectoralComputed, sectoralBreakoutCandidates — plus asOf for the header.
+export default function App({ dataset = null }) {
   const [activeAssetClass, setActiveAssetClass] = useState("equities");
 
   // Price freshness per asset class. Equities is computed here from this component's
@@ -1580,6 +1593,7 @@ export default function App() {
   const closesById = useMemo(() => closesByKeyFromPrices(prices, "ISIN"), [prices]);
   const rsUniverse = useMemo(() => computeRSUniverse(closesById), [closesById]);
   const computed = useMemo(() => {
+    if (dataset) return dataset.computed;
     const base = computeAll(master, fundamentals, prices);
     const fundScores = computeFundamentalScores(base);
     return base.map((s) => {
@@ -1591,7 +1605,7 @@ export default function App() {
       const peComputed = tech && fund && fund.epsLatest ? tech.cmp / fund.epsLatest : null;
       return { ...s, tech, fund, PE: peComputed != null ? peComputed : s.PE };
     });
-  }, [master, fundamentals, prices, rsUniverse]);
+  }, [dataset, master, fundamentals, prices, rsUniverse]);
 
   // Market Breadth: single flat computation, no bucketing (removed — it was being computed
   // and then entirely discarded, since only the flat reading is ever displayed; this was
@@ -1599,8 +1613,9 @@ export default function App() {
   // computation in the app, walking up to 500 days across every stock).
   const needsBreadthCompute = activeAssetClass === "equities" && equitiesSubTab === "breadth";
   const breadthSeries = useMemo(
-    () => (needsBreadthCompute ? computeBreadthSeries(master, closesById) : []),
-    [master, closesById, needsBreadthCompute]
+    () => (dataset ? dataset.breadthSeries
+                   : needsBreadthCompute ? computeBreadthSeries(master, closesById) : []),
+    [dataset, master, closesById, needsBreadthCompute]
   );
 
   // Golden Breakout: a single flat filter+sort over the already-computed stock list — no
@@ -1608,13 +1623,16 @@ export default function App() {
   // same eager-computation caution as breadth. Still gated to the tab being open, for
   // consistency and to avoid any unnecessary work while sitting on the base data screen.
   const goldenBreakoutCandidates = useMemo(
-    () => (activeAssetClass === "equities" && equitiesSubTab === "breakout" ? runGoldenBreakoutScreener(computed) : []),
-    [computed, activeAssetClass, equitiesSubTab]
+    () => (dataset ? dataset.goldenBreakoutCandidates
+                   : activeAssetClass === "equities" && equitiesSubTab === "breakout"
+                     ? runGoldenBreakoutScreener(computed) : []),
+    [dataset, computed, activeAssetClass, equitiesSubTab]
   );
 
   // Sectoral: derived from Equities data, only computed when its sub-tabs are actually open.
   const needsSectoralCompute = activeAssetClass === "equities" && (equitiesSubTab === "sectoral" || equitiesSubTab === "sectoralBreakout");
   const sectoralComputed = useMemo(() => {
+    if (dataset) return dataset.sectoralComputed;
     if (!needsSectoralCompute) return [];
     const seriesBySector = computeSectoralSeries(master, prices);
     const sectorNames = Object.keys(seriesBySector);
@@ -1625,13 +1643,16 @@ export default function App() {
       const tech = computeTechnicalBlock(seriesBySector[name]);
       return { ISIN: name, Name: name, Symbol: name, Sector: name, tech: tech ? { ...tech, rsRating: rsUniverseSector[name] || null } : tech, fund: null };
     });
-  }, [master, prices, needsSectoralCompute]);
+  }, [dataset, master, prices, needsSectoralCompute]);
   const sectoralBreakoutCandidates = useMemo(
-    () => (equitiesSubTab === "sectoralBreakout" ? runGoldenBreakoutScreener(sectoralComputed) : []),
-    [sectoralComputed, equitiesSubTab]
+    () => (dataset ? dataset.sectoralBreakoutCandidates
+                   : equitiesSubTab === "sectoralBreakout" ? runGoldenBreakoutScreener(sectoralComputed) : []),
+    [dataset, sectoralComputed, equitiesSubTab]
   );
 
-  const sectors = useMemo(() => ["All", ...Array.from(new Set(master.map((m) => m.Sector).filter(Boolean)))], [master]);
+  const sectors = useMemo(
+    () => ["All", ...Array.from(new Set((dataset ? dataset.computed : master).map((m) => m.Sector).filter(Boolean)))],
+    [dataset, master]);
 
   const filtered = useMemo(() => {
     let list = computed.filter((s) =>
@@ -1706,12 +1727,13 @@ export default function App() {
     </th>
   );
 
-  const hasData = master.length > 0;
+  const hasData = dataset ? dataset.computed.length > 0 : master.length > 0;
 
   // Equities freshness comes straight from this component's own price state; the other
   // classes have reported theirs in. The header shows whichever class is on screen, so
   // the date always describes what the reader is actually looking at.
-  const equitiesAsOf = useMemo(() => priceAsOfSummary(prices), [prices]);
+  const equitiesAsOf = useMemo(
+    () => (dataset ? dataset.asOf : priceAsOfSummary(prices)), [dataset, prices]);
   const activeAsOf = activeAssetClass === "equities" ? equitiesAsOf : assetAsOf[activeAssetClass];
   const activeAccent = activeAssetClass === "equities" ? T.gold : ASSET_CLASSES[activeAssetClass]?.accent;
 
@@ -1731,7 +1753,7 @@ export default function App() {
       <div style={{ borderBottom: `1px solid ${T.border}`, padding: "18px 24px", display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
         <div>
           <div style={{ fontFamily: "'IBM Plex Serif', serif", fontSize: 22, fontWeight: 600, letterSpacing: "-0.01em", color: T.gold }}>Meridian</div>
-          <div style={{ fontSize: 12, color: T.textDim, marginTop: 2 }}>Fundamental + technical signal ledger — NIFTY 50 pilot</div>
+          <div style={{ fontSize: 12, color: T.textDim, marginTop: 2 }}>Fundamental + technical signal ledger — Indian equities</div>
         </div>
         <div style={{ fontSize: 11, color: T.textDim, fontFamily: "'IBM Plex Mono', monospace", display: "flex", alignItems: "center", gap: 14 }}>
           {activeAssetClass === "equities"
@@ -1832,7 +1854,10 @@ export default function App() {
 
       {activeAssetClass === "equities" && equitiesSubTab === "stocks" && (
       <>
-      {/* Data controls */}
+      {/* Data controls — hidden in production. A display layer fed by the pipeline
+          (§6.2) has nothing to upload, and offering the controls would imply a user
+          could change what the screens show, which they cannot and should not. */}
+      {!dataset && (
       <div style={{ padding: "16px 24px", background: T.surface, borderBottom: `1px solid ${T.border}` }}>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           {[
@@ -1902,10 +1927,12 @@ export default function App() {
           </div>
         )}
       </div>
+      )}
 
       {!hasData ? (
         <div style={{ padding: 60, textAlign: "center", color: T.textDim }}>
-          Upload your CSVs or load demo data to see the screen.
+          {dataset ? "No screen published yet — the pipeline has not run."
+                   : "Upload your CSVs or load demo data to see the screen."}
         </div>
       ) : (
         <>
