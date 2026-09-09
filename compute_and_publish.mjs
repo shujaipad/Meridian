@@ -236,9 +236,19 @@ if (FROM_DB) {
   }
   console.log(`\n  ${prices.length.toLocaleString()} equity price rows from the database`);
 }
-if (!DRY && Object.keys(ids).length !== master.length) {
-  console.error(`  universe in Supabase (${Object.keys(ids).length}) != master (${master.length}) — run load_supabase.mjs first`);
-  process.exit(1);
+// Check that every EQUITY in the master is present, not that the row counts match.
+// The counts stopped matching the moment the four non-equity classes were added —
+// 2,240 in Supabase against a 2,138-row equity master is correct, and comparing
+// totals turned that into a false "run load_supabase.mjs first".
+if (!DRY) {
+  const missing = master.filter((m) => !ids[m.ISIN]).map((m) => m.ISIN);
+  if (missing.length) {
+    console.error(`  ${missing.length} master instrument(s) missing from the Supabase universe `
+                + `(e.g. ${missing.slice(0, 3).join(", ")}) — run load_supabase.mjs first`);
+    process.exit(1);
+  }
+  console.log(`  all ${master.length} equity instruments present, `
+            + `${Object.keys(ids).length - master.length} non-equity alongside them`);
 }
 
 // ---------------------------------------------------------------- compute
