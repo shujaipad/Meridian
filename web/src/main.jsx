@@ -5,7 +5,7 @@ import App from "@meridian/meridian.jsx";
 import Auth from "./Auth.jsx";
 import { loadScreens } from "./loadScreens.js";
 import { installStorage } from "./storage.js";
-import { configError, supabase } from "./supabase.js";
+import { clientError, configError, supabase } from "./supabase.js";
 
 // Before anything renders: meridian.jsx reads window.storage during its first effect.
 installStorage();
@@ -61,10 +61,11 @@ function Root() {
   // worse symptom than a login prompt.
   useEffect(() => { if (session) fetchScreens(); }, [session, fetchScreens]);
 
-  if (configError) {
+  const setupProblem = configError || clientError;
+  if (setupProblem) {
     return <Centered>
-      <div style={{ color: C.gold, fontWeight: 600, marginBottom: 8 }}>Not configured</div>
-      {configError}
+      <div style={{ color: C.gold, fontWeight: 600, marginBottom: 8 }}>Meridian is not configured</div>
+      {setupProblem}
     </Centered>;
   }
   if (session === undefined) return <Centered>Checking your session…</Centered>;
@@ -86,4 +87,42 @@ function Root() {
   return <><SignOut /><App dataset={data} /></>;
 }
 
-createRoot(document.getElementById("root")).render(<React.StrictMode><Root /></React.StrictMode>);
+// Last line of defence. Anything that throws before or during the first render —
+// a module-scope failure, a bad environment variable, a broken import — otherwise
+// leaves a completely blank page: no message, no clue, and nothing the person
+// looking at it can report beyond "it is blank". Painting the actual error into the
+// DOM turns that into something diagnosable without opening developer tools.
+function fatal(err) {
+  const el = document.getElementById("root");
+  if (!el) return;
+  el.innerHTML = "";
+  const wrap = document.createElement("div");
+  wrap.setAttribute("style",
+    "min-height:100vh;background:#0F1115;color:#8B93A3;display:flex;align-items:center;"
+    + "justify-content:center;padding:24px;font:13px/1.7 system-ui,sans-serif;text-align:center");
+  const inner = document.createElement("div");
+  inner.setAttribute("style", "max-width:560px");
+  const h = document.createElement("div");
+  h.setAttribute("style", "color:#D2544A;font-weight:600;margin-bottom:10px;font-size:15px");
+  h.textContent = "Meridian could not start";
+  const p = document.createElement("div");
+  p.setAttribute("style", "font-family:ui-monospace,monospace;font-size:12px;color:#E6E9EF;"
+    + "background:#161A21;border:1px solid #252B36;border-radius:6px;padding:12px;text-align:left;"
+    + "white-space:pre-wrap;word-break:break-word");
+  p.textContent = String(err?.stack || err?.message || err);
+  const hint = document.createElement("div");
+  hint.setAttribute("style", "margin-top:12px");
+  hint.textContent = "Send this message on — it names the cause exactly.";
+  inner.append(h, p, hint);
+  wrap.append(inner);
+  el.append(wrap);
+}
+
+window.addEventListener("error", (e) => { if (!document.getElementById("root")?.firstChild) fatal(e.error || e.message); });
+window.addEventListener("unhandledrejection", (e) => { if (!document.getElementById("root")?.firstChild) fatal(e.reason); });
+
+try {
+  createRoot(document.getElementById("root")).render(<React.StrictMode><Root /></React.StrictMode>);
+} catch (e) {
+  fatal(e);
+}
