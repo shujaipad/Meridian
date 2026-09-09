@@ -133,6 +133,28 @@ for cls in ("commodities", "currencies", "indices", "crypto"):
     check(f"{cls}: no swarm of single-instrument dates (timezone regression)",
           len(thin) <= 20, f"{len(thin)} dates below 25% coverage")
 
+    # DEAD INSTRUMENTS. An instrument whose last bar is years behind the rest of its
+    # class is not "a bit sparse" — its ticker has been renamed, delisted, or was never
+    # the asset the master claims. Every other check above passes happily on a series
+    # that simply stopped: the bars it does have are unique, positive, well-covered and
+    # over 200 in number.
+    #
+    # This found five of twenty-six crypto instruments on 2026-09-09. Two were the
+    # WRONG ASSET ENTIRELY — `UNI-USD` is UNICORN Token (a dead sub-cent token), not
+    # Uniswap, which is `UNI7083-USD`; `CC-USD` is CloudCoin, not Canton. Three were
+    # renamed or delisted: MATIC became POL28321-USD, USDE moved to USDE29470-USD, and
+    # TONCOIN-USD stopped in 2022. The screens showed all five as current prices.
+    #
+    # 30 days, not zero: classes have their own calendars and a genuine holiday gap is
+    # normal. A year and a half is not.
+    latest = p.Date.max()
+    last_bar = p.groupby("Symbol").Date.max()
+    stale = last_bar[last_bar < (pd.Timestamp(latest) - pd.Timedelta(days=30)).strftime("%Y-%m-%d")]
+    check(f"{cls}: no instrument stalled more than 30 days behind its class",
+          len(stale) == 0,
+          "all current" if len(stale) == 0
+          else "; ".join(f"{sym} last traded {d}" for sym, d in stale.items()))
+
     # FX genuinely has no volume; everything else should mostly have it. Empty is
     # written rather than zero, because zero is a real reading meaning "did not trade".
     has_vol = p.Volume.notna().mean()

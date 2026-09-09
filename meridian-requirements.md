@@ -1792,6 +1792,55 @@ For quick reference; each item traces to a fuller explanation above.
    classes and **not** for equities — which is why 158 violations sit under an
    all-green report. Whichever option is chosen, the equity assertion should exist.
 
+3b. **Crypto universe: 5 of 26 instruments were wrong. Fixed 2026-09-09; two removed.**
+   Found by auditing every master ticker against what Yahoo actually returns, rather
+   than trusting the file. Two were **not the asset the master named**:
+
+   | Symbol | Master ticker | What it actually is | Corrected to |
+   |---|---|---|---|
+   | UNI | `UNI-USD` | **UNICORN Token**, a dead sub-cent token — not Uniswap | `UNI7083-USD` (Uniswap, $23.31 → $6.61, current) |
+   | CC | `CC-USD` | **CloudCoin**, not Canton; dead since 2023-01-12 | none exists on Yahoo — **removed** |
+   | MATIC | `MATIC-USD` | Polygon, but frozen at the POL rebrand | `POL28321-USD` (Polygon (prev. MATIC), current) |
+   | USDE | `USDE-USD` | USDe, but the series stops 2025-01-19 | `USDE29470-USD` (Ethena USDe, current) |
+   | TON | `TONCOIN-USD` | Toncoin, stops 2022-10-09 | `TON11419-USD` has 2 bars — fails §3.1 — **removed** |
+
+   The screens had been showing all five as current prices, up to 3.9 years stale, and
+   UNI's chart was a different asset's price history under Uniswap's name. The master
+   already used Yahoo's disambiguated form for `HYPE32196-USD` and `SUI20947-USD`, so
+   the pattern was known and applied inconsistently.
+
+   TON and CC are removed rather than left for a decision because neither has a source
+   that can ever be right: Canton is not on Yahoo at all, and Toncoin's correct ticker
+   carries 2 bars against §3.1's 200-bar minimum. That is the spec's own rule applied to
+   verified facts, not a judgement call — unlike the 158 equities in item 3a, whose data
+   is correct and merely short, and whose removal is a policy choice. Restoring either
+   is one line in `meridian-crypto-master.csv` if that reading is wrong.
+
+   `check_data_integrity.py` passed all five: it checked bar counts, duplicates,
+   non-positive closes and date coverage, and never asked whether an instrument's last
+   bar was anywhere near its class's. It does now — a 30-day staleness guard, which is
+   what caught TON and CC after the three ticker corrections landed.
+
+3c. **Shiba Inu's entire price history was stored as zero.** `prices_daily.close` was
+   `numeric(12, 4)`, which cannot represent a price below 0.00005. SHIB trades around
+   $0.000005, so 1,807 of its 1,827 bars were the literal value 0 in the database, and
+   every technical computed from them — all six moving averages, RSI, the 52-week range,
+   the golden-cross state — was derived from a series of zeros and rendered on the Crypto
+   screen as if it meant something.
+
+   The source CSV was correct throughout (`7e-06`, faithfully fetched). The loss happened
+   at the column. `check_data_integrity.py` reads the CSVs and reported them clean;
+   `verify_load.sql` reads the loaded rows and found 1,857 non-positive closes. **Neither
+   guard would have found this alone — it surfaced because the two disagreed**, which is
+   an argument for keeping both rather than consolidating them.
+
+   Migration 004 widens `close`/`high`/`low` and every stored price and moving average to
+   `numeric(20, 10)`: ten integer digits and ten decimals, which holds the costliest
+   equity in the universe (Rs 162,005) and a token at 0.0000000001 exactly. numeric is
+   arbitrary-precision and stores only the digits present, so the 2.28M rows that were
+   already fine cost nothing. Verified by reloading SHIB into the widened column: 1,827
+   bars, zero zeros, range 0.000004–0.00008.
+
 4. **Timing of the Claude Code migration** — deliberately deferred ("closer to
    production" was the original trigger condition); this document is intended to make
    that transition low-friction whenever it happens, not to force the timing.
