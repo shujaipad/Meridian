@@ -1200,6 +1200,13 @@ Two deployment failures worth recording, because neither error message points at
    the deployment, the environment variables, the Supabase client and the redirect
    allow-list are all already working.
 
+**Measured on the live app (2026-09-09): all five sub-tabs render, first load ~2 seconds.**
+That covers 2,138 instruments across eleven paged requests in six parallel chains. It also
+settles the region question empirically rather than by estimate: the same load from Sydney
+would have added roughly 150 ms to every one of those round trips, so the §6.8 decision is
+worth something like a second and a half on every cold load — and the migration it would
+now require was avoided by making the call while the database was still empty.
+
 Also required, and not obvious: Supabase → Authentication → **URL Configuration** must list
 the Vercel URL as Site URL and in Redirect URLs. Left at its default the magic link
 redirects to `http://localhost:3000` and fails on any machine with nothing running there.
