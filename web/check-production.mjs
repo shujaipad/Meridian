@@ -14,7 +14,23 @@
  *         node check-production.mjs
  */
 import { chromium } from "playwright";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+
+// The fixture is the whole basis for every assertion below, so a stale one does not
+// fail the run -- it quietly narrows what the run is even testing. That happened:
+// screens.json still held the equity-only universe from before the four non-equity
+// classes existed, and the non-equity checks were measuring an empty screen. Assert
+// its composition before trusting anything it feeds.
+const fixture = JSON.parse(readFileSync(new URL("./fixture/screens.json", import.meta.url)));
+const composition = {};
+for (const row of fixture.universe) composition[row.asset_class] = (composition[row.asset_class] ?? 0) + 1;
+for (const cls of ["equity", "commodity", "currency", "index", "crypto"]) {
+  if (!composition[cls]) {
+    console.error(`\nFAIL — fixture/screens.json has no ${cls} rows. Run: node make-fixture.mjs\n`
+      + `  found: ${JSON.stringify(composition)}`);
+    process.exit(1);
+  }
+}
 
 const URL_BASE = process.env.PREVIEW_URL ?? "http://127.0.0.1:5179/";
 const CHROME = "/opt/pw-browsers/chromium-1194/chrome-linux/chrome";
@@ -44,6 +60,21 @@ const check = (label, got, want) => {
 };
 
 await page.goto(URL_BASE, { waitUntil: "networkidle" });
+
+// Fail on the shell's own error screens before waiting on anything. Both of them
+// render without the word "Meridian" in the heading, so without this the run only
+// ends in a 60-second timeout that says "locator not visible" -- burying a message
+// that already names the cause exactly.
+await page.waitForTimeout(2000);
+const early = await page.locator("body").innerText();
+for (const signature of ["Could not load the screens", "Meridian could not start", "Meridian is not configured"]) {
+  if (early.includes(signature)) {
+    console.error(`\nFAIL — the app refused to start:\n${early.slice(0, 1200)}\n`);
+    await browser.close();
+    process.exit(1);
+  }
+}
+
 // 2,089 rows through three paged reads and a full render is not instant.
 await page.waitForSelector("text=Meridian", { timeout: 60000 });
 await page.waitForFunction(() => !document.body.innerText.includes("Loading the latest screen"), { timeout: 90000 });

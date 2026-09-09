@@ -45,7 +45,7 @@ const key = (v) => (v === null || v === undefined ? null : String(v));
 
 export async function loadScreens() {
   const [universe, technicals, scored, candidates, sectoral, breadth] = await Promise.all([
-    readAll("universe", "id,identifier,symbol,name,sector,industry_group,market_cap"),
+    readAll("universe", "id,asset_class,identifier,symbol,name,sector,industry_group,market_cap"),
     readAll("technicals_daily", "*"),
     readAll("fundamentals_scored", "*"),
     readAll("golden_breakout_candidates", "*"),
@@ -59,6 +59,21 @@ export async function loadScreens() {
   // that has no idea they are there.
   const equities = universe.filter((u) => u.asset_class === "equity");
   const CLASS_OF = { commodity: "commodities", currency: "currencies", index: "indices", crypto: "crypto" };
+
+  // Every instrument must be claimed by exactly one screen. This guard exists because
+  // the alternative to it was a live blank page: `asset_class` was missing from the
+  // select above, so every row's asset_class read `undefined`, every filter matched
+  // nothing, and the app rendered its empty state with no error anywhere. An empty
+  // result that looks deliberate is the worst failure mode this file has, so it now
+  // refuses to return one -- the shell turns a thrown error into a message on screen.
+  const claimed = universe.filter((u) => u.asset_class === "equity" || u.asset_class in CLASS_OF).length;
+  if (universe.length > 0 && claimed !== universe.length) {
+    const seen = [...new Set(universe.map((u) => String(u.asset_class)))].join(", ");
+    throw new Error(
+      `universe: ${universe.length - claimed} of ${universe.length} rows have no screen `
+      + `(asset_class values seen: ${seen}). If that reads "undefined", the column is `
+      + `missing from the select above.`);
+  }
   const techById = Object.fromEntries(technicals.map((t) => [key(t.universe_id), t]));
   const scoreById = Object.fromEntries(scored.map((f) => [key(f.universe_id), f]));
 
@@ -151,7 +166,6 @@ export async function loadScreens() {
   };
 
   // --- the four non-equity classes, each its own self-contained screen ---
-  const candidateRankById = Object.fromEntries(candidates.map((c) => [c.universe_id, c.rank]));
   const assets = {};
   for (const [assetClass, screenKey] of Object.entries(CLASS_OF)) {
     const members = universe.filter((u) => u.asset_class === assetClass);

@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "node check-production.mjs"
+    "check": "node make-fixture.mjs && node check-production.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.58.0",

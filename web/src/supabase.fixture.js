@@ -10,6 +10,7 @@
 import fixture from "../fixture/screens.json";
 
 export const configError = null;
+export const clientError = null;
 
 const session = { user: { id: "fixture-user", email: "fixture@meridian.local" } };
 
@@ -40,9 +41,32 @@ export const supabase = {
   from(table) {
     const rows = fixture[table] || [];
     return {
-      select() { return this; },
+      // PostgREST returns ONLY the requested columns, so the fixture must too. It
+      // used to ignore the list and hand back whole rows, and that hid a real bug
+      // for a full release: `asset_class` was left out of the universe select, so
+      // in production every row's asset_class was undefined, every asset-class
+      // filter matched nothing, and the app rendered an empty screen -- while every
+      // local check passed, because the fixture supplied the column nobody asked
+      // for. Projecting here is what makes `npm run check` able to catch it.
+      select(columns) {
+        this._columns = columns;
+        return this;
+      },
       async range(from, to) {
-        return { data: rows.slice(from, to + 1), error: null };
+        const page = rows.slice(from, to + 1);
+        const cols = this._columns;
+        if (!cols || cols.trim() === "*") return { data: page, error: null };
+        const wanted = cols.split(",").map((c) => c.trim()).filter(Boolean);
+        const missing = wanted.filter((c) => page.length > 0 && !(c in page[0]));
+        if (missing.length > 0) {
+          // Real PostgREST refuses a column that does not exist rather than
+          // returning it as undefined. Match that, or a typo reads as empty data.
+          return { data: null, error: { message: `column ${table}.${missing[0]} does not exist` } };
+        }
+        return {
+          data: page.map((r) => Object.fromEntries(wanted.map((c) => [c, r[c]]))),
+          error: null,
+        };
       },
     };
   },
