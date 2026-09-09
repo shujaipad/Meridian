@@ -62,7 +62,6 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 const { createClient } = await import("@supabase/supabase-js");
 const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const r4 = (v) => (v == null || Number.isNaN(v) ? null : Math.round(v * 1e4) / 1e4);
 
 // ---------------------------------------------------------------- fetch
@@ -133,12 +132,35 @@ async function readAll(table, columns, filter) {
   }
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Transport failures are retried; deterministic ones are not. A home connection
+// dropping mid-upload aborted the first real load, and every write here is an upsert
+// on a natural key, so retrying one either lands or is a no-op.
+const TRANSIENT = /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|network|502|503|504|timeout/i;
+
+async function withRetry(fn, label) {
+  let lastError;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    let error;
+    try { ({ error } = await fn()); }
+    catch (e) { error = { message: String(e?.message || e) }; }
+    if (!error) return;
+    lastError = error;
+    if (!TRANSIENT.test(error.message || "") || attempt === 4) break;
+    const wait = 2 ** attempt * 1000 + Math.random() * 500;
+    console.error(`\n  ${label}: ${error.message} — retrying in ${(wait / 1000).toFixed(1)}s`);
+    await sleep(wait);
+  }
+  throw new Error(`${label}: ${lastError.message}`);
+}
+
 async function upsertPrices(rows, label) {
   if (DRY || !rows.length) return;
   for (let i = 0; i < rows.length; i += BATCH) {
-    const { error } = await db.from("prices_daily")
-      .upsert(rows.slice(i, i + BATCH), { onConflict: "universe_id,trade_date" });
-    if (error) throw new Error(`upsert ${label}: ${error.message}`);
+    await withRetry(() => db.from("prices_daily")
+      .upsert(rows.slice(i, i + BATCH), { onConflict: "universe_id,trade_date" }),
+      `upsert ${label}`);
   }
 }
 

@@ -110,17 +110,39 @@ const num = (v) => (v === "" || v == null ? null : Number(v));
 const r4 = (v) => (v == null || Number.isNaN(v) ? null : Math.round(v * 1e4) / 1e4);
 const r2 = (v) => (v == null || Number.isNaN(v) ? null : Math.round(v * 100) / 100);
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Transport failures are retried; deterministic ones are not. A home connection
+// dropping mid-upload aborted the first real load, and every write here is an upsert
+// on a natural key, so retrying one either lands or is a no-op.
+const TRANSIENT = /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|network|502|503|504|timeout/i;
+
+async function withRetry(fn, label) {
+  let lastError;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    let error;
+    try { ({ error } = await fn()); }
+    catch (e) { error = { message: String(e?.message || e) }; }
+    if (!error) return;
+    lastError = error;
+    if (!TRANSIENT.test(error.message || "") || attempt === 4) break;
+    const wait = 2 ** attempt * 1000 + Math.random() * 500;
+    console.error(`\n  ${label}: ${error.message} — retrying in ${(wait / 1000).toFixed(1)}s`);
+    await sleep(wait);
+  }
+  throw new Error(`${label}: ${lastError.message}`);
+}
+
 async function write(table, rows, { onConflict, label }) {
   if (DRY) { dryWrite(table, rows); console.log(`  ${table}: ${rows.length} rows (dry run)`); return; }
   for (let i = 0; i < rows.length; i += BATCH) {
     const slice = rows.slice(i, i + BATCH);
-    const q = db.from(table);
-    const { error } = onConflict
-      ? await q.upsert(slice, { onConflict })
-      : await q.insert(slice);
-    if (error) {
-      console.error(`\n  FAILED writing ${table} (${label} ${i}-${i + BATCH}): ${error.message}`);
-      if (error.details) console.error(`  details: ${error.details}`);
+    try {
+      await withRetry(() => (onConflict
+        ? db.from(table).upsert(slice, { onConflict })
+        : db.from(table).insert(slice)), `${table} ${label} ${i}-${i + BATCH}`);
+    } catch (e) {
+      console.error(`\n  FAILED: ${e.message}`);
       process.exit(1);
     }
     process.stdout.write(`\r  ${table}: ${Math.min(i + BATCH, rows.length)}/${rows.length}`);

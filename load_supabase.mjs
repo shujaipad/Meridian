@@ -142,15 +142,44 @@ function readCSV(path) {
     splitCSVLine(l.replace(/\r$/, "")).map((v, i) => [head[i], v])));
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// A dropped connection is not a reason to abandon a 2.3-million-row upload. Uploading
+// this much over a home connection makes a transient TCP reset near-certain at some
+// point, and the first real run hit exactly that: ECONNRESET partway through part 2,
+// aborting the whole job. Every write here is an upsert on a natural key, so retrying
+// one is always safe — it either lands or is a no-op.
+//
+// Retried only for TRANSPORT failures. A constraint violation, a bad column or a
+// rejected key is deterministic: retrying it just fails four more times slowly and
+// buries the real message. Those still abort immediately.
+const TRANSIENT = /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|network|502|503|504|timeout/i;
+
 async function upsert(table, rows, onConflict, label) {
   if (DRY) { dryWrite(table, rows); return; }
-  const { error } = await db.from(table).upsert(rows, { onConflict, count: "exact" });
-  if (error) {
-    console.error(`\n  FAILED writing ${label} to ${table}: ${error.message}`);
-    if (error.details) console.error(`  details: ${error.details}`);
-    console.error(`  Progress kept in ${PROGRESS} — fix the cause and re-run to continue.`);
-    process.exit(1);
+  let lastError;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    let error;
+    try {
+      ({ error } = await db.from(table).upsert(rows, { onConflict, count: "exact" }));
+    } catch (e) {
+      // supabase-js surfaces some transport failures as a thrown TypeError rather
+      // than an error field, so both shapes have to be caught.
+      error = { message: String(e?.message || e) };
+    }
+    if (!error) return;
+    lastError = error;
+    const transient = TRANSIENT.test(error.message || "");
+    if (!transient || attempt === 4) break;
+    const wait = 2 ** attempt * 1000 + Math.random() * 500;
+    console.error(`\n  ${table}: ${error.message} — retrying in ${(wait / 1000).toFixed(1)}s `
+                + `(attempt ${attempt + 2}/5)`);
+    await sleep(wait);
   }
+  console.error(`\n  FAILED writing ${label} to ${table}: ${lastError.message}`);
+  if (lastError.details) console.error(`  details: ${lastError.details}`);
+  console.error(`  Progress kept in ${PROGRESS} — fix the cause and re-run to continue.`);
+  process.exit(1);
 }
 
 // ---------------------------------------------------------- non-equity universe
