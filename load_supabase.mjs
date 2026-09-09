@@ -55,6 +55,15 @@ const PROGRESS = join(BASE,
   process.argv.includes("--dry-run") ? "dryrun-progress.json" : "load_supabase_progress.json");
 
 const MASTER = join(BASE, "meridian-company-master-2138.csv");
+// The four non-equity classes (§3.2a). Keyed by Yahoo ticker rather than ISIN,
+// because that is the only identifier they have — hence `identifier_type` on the
+// universe table, which existed for exactly this from the start.
+const ASSET_CLASSES = [
+  { dir: "commodities", assetClass: "commodity", sectorField: "Category" },
+  { dir: "currencies",  assetClass: "currency",  sectorField: null },
+  { dir: "indices",     assetClass: "index",     sectorField: "Region" },
+  { dir: "crypto",      assetClass: "crypto",    sectorField: null },
+];
 const FUNDAMENTALS = join(BASE, "meridian-fundamentals-742.csv");
 const PRICE_PARTS = [1, 2, 3].map((i) =>
   join(BASE, `meridian-price-history-2090-part${i}of3.csv`));
@@ -144,6 +153,59 @@ async function upsert(table, rows, onConflict, label) {
   }
 }
 
+// ---------------------------------------------------------- non-equity universe
+async function loadAssetClassUniverse() {
+  const rows = [];
+  for (const c of ASSET_CLASSES) {
+    const path = join(BASE, `meridian-${c.dir}-master.csv`);
+    if (!existsSync(path)) { console.log(`  ${c.dir}: no master, skipping`); continue; }
+    for (const m of readCSV(path)) {
+      rows.push({
+        asset_class: c.assetClass,
+        identifier_type: "yahoo_ticker",
+        identifier: m.YahooTicker,
+        symbol: m.Symbol,
+        name: m.Name,
+        // Commodities carry a Category and indices a Region; both are the natural
+        // grouping for their class, and both land in the same column the equity
+        // universe uses for Industry Name.
+        sector: c.sectorField ? (m[c.sectorField] || null) : null,
+        industry_group: null,
+        market_cap: null,
+        status: "active",
+      });
+    }
+  }
+  console.log(`non-equity universe: ${rows.length} instruments`);
+  for (let i = 0; i < rows.length; i += BATCH) {
+    await upsert("universe", rows.slice(i, i + BATCH), "asset_class,identifier", `rows ${i}`);
+  }
+  console.log("  done");
+}
+
+async function loadAssetClassPrices(ids) {
+  for (const c of ASSET_CLASSES) {
+    const path = join(BASE, `meridian-${c.dir}-prices.csv`);
+    if (!existsSync(path)) continue;
+    if (progress[`prices-${c.dir}`] === "complete") { console.log(`prices ${c.dir}: already complete`); continue; }
+    // Yahoo ticker, not symbol: `ids` is keyed by the universe table's `identifier`,
+    // and two classes could otherwise collide on a short symbol.
+    const tickerOf = Object.fromEntries(
+      readCSV(join(BASE, `meridian-${c.dir}-master.csv`)).map((m) => [m.Symbol, m.YahooTicker]));
+    const rows = readCSV(path).map((r) => ({
+      universe_id: ids[tickerOf[r.Symbol]], trade_date: r.Date,
+      high: num(r.High), low: num(r.Low), close: num(r.Close), volume: int(r.Volume),
+    })).filter((r) => r.universe_id);
+    console.log(`prices ${c.dir}: ${rows.length.toLocaleString()} rows`);
+    for (let i = 0; i < rows.length; i += BATCH) {
+      await upsert("prices_daily", rows.slice(i, i + BATCH), "universe_id,trade_date", `${c.dir} ${i}`);
+      process.stdout.write(`\r  ${c.dir}: ${Math.min(i + BATCH, rows.length).toLocaleString()}/${rows.length.toLocaleString()}`);
+    }
+    progress[`prices-${c.dir}`] = "complete"; save();
+    console.log("");
+  }
+}
+
 // ---------------------------------------------------------------- universe
 async function loadUniverse() {
   const master = readCSV(MASTER);
@@ -173,7 +235,12 @@ async function loadUniverse() {
 async function idByIsin() {
   if (DRY) {
     const map = {};
-    readCSV(MASTER).forEach((m, i) => { map[m.ISIN] = i + 1; });
+    let n = 0;
+    readCSV(MASTER).forEach((m) => { map[m.ISIN] = ++n; });
+    for (const c of ASSET_CLASSES) {
+      const path = join(BASE, `meridian-${c.dir}-master.csv`);
+      if (existsSync(path)) readCSV(path).forEach((m) => { map[m.YahooTicker] = ++n; });
+    }
     return map;
   }
   const map = {};
@@ -257,6 +324,10 @@ if (progress.universe !== "complete") {
   await loadUniverse(); progress.universe = "complete"; save();
 } else console.log("universe: already complete, skipping");
 
+if (progress.assetUniverse !== "complete") {
+  await loadAssetClassUniverse(); progress.assetUniverse = "complete"; save();
+} else console.log("non-equity universe: already complete, skipping");
+
 const ids = await idByIsin();
 console.log(`universe id map: ${Object.keys(ids).length} instruments`);
 
@@ -265,6 +336,7 @@ if (progress.fundamentals !== "complete") {
 } else console.log("fundamentals: already complete, skipping");
 
 await loadPrices(ids);
+await loadAssetClassPrices(ids);
 
 console.log(`\nloaded in ${((Date.now() - t0) / 60000).toFixed(1)} min`);
 console.log("Verify with verify_load.sql in the Supabase SQL Editor.");

@@ -90,6 +90,30 @@ await page.waitForTimeout(2500);
 check("breadth chart rendered", await page.locator("svg.recharts-surface").count() > 0, true);
 await page.screenshot({ path: "shots/prod-05-market-breadth.png" });
 
+// --- the four non-equity asset classes ------------------------------------
+// The critical assertion is the FIRST one: with 2,240 universe rows in the database,
+// the equity screen must show 2,138. If it shows 2,240 the class split failed and
+// commodities are being ranked alongside stocks.
+for (const [tab, expect, sample] of [
+  ["Commodities", 26, /Gold|Crude Oil|Corn/],
+  ["Global Indices", 23, /S&P 500|Nikkei|Nifty/],
+  ["Crypto", 26, /Bitcoin|Ethereum|Solana/],
+  ["Currencies", 27, /Euro|Yen|Dollar/],
+]) {
+  await page.getByRole("button", { name: tab, exact: true }).first().click();
+  await page.waitForTimeout(1500);
+  const t = await body();
+  check(`${tab}: renders its own instruments`, sample.test(t), true);
+  check(`${tab}: no upload controls`, !/Load demo data/.test(t) && !/master\b/i.test(t.split("\n")[4] || ""), true);
+  check(`${tab}: shows a price date`, /prices as on \d{2}-\d{2}-\d{4}/.test(t), true);
+  await page.screenshot({ path: `shots/prod-${tab.toLowerCase().replace(/ /g, "-")}.png` });
+}
+
+await page.getByRole("button", { name: "Equities", exact: true }).first().click();
+await page.waitForTimeout(1500);
+check("equity screen still shows only equities (2138, not 2240)",
+      /2138 stocks loaded/.test(await body()), true);
+
 console.log("");
 if (pageErrors.length) {
   console.log("page errors:");

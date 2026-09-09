@@ -26,7 +26,11 @@ if (!existsSync(SRC)) {
 // Reverse of the COPY escaping compute_and_publish.mjs applies.
 const unesc = (s) => s.replace(/\\(.)/g, (_, c) =>
   c === "t" ? "\t" : c === "n" ? "\n" : c === "r" ? "\r" : c);
-const NUMERIC = /_(pct|rating|ratio)$|^(cmp|rsi|ma\d+|high52|low52|composite_score|rank|constituents|new_highs|new_lows|universe_id)$/;
+// PostgREST returns bigint and integer columns as JSON numbers, and `numeric` as a
+// JSON string once it exceeds double precision. The fixture reproduces BOTH, because
+// getting this wrong in either direction hides a real bug: emitting universe_id as a
+// string made every Set lookup miss and silently dropped all 2,089 equity technicals.
+const INTEGER = /^(universe_id|rank|constituents|new_highs|new_lows|rs_streak_days|golden_cross_streak|id)$/;
 
 function readTSV(table) {
   const cols = readFileSync(join(SRC, `${table}.cols`), "utf8").split(",");
@@ -40,10 +44,10 @@ function readTSV(table) {
       const v = unesc(raw);
       if (c === "s_signals" || c === "m_signals" || c === "s_streaks" || c === "m_streaks" || c === "per_metric") row[c] = JSON.parse(v);
       else if (v === "true" || v === "false") row[c] = v === "true";
-      // PostgREST returns `numeric` as a JSON string once it exceeds double
-      // precision. Emitting strings here is deliberate: it makes the fixture
-      // reproduce that, so the app's coercion at the boundary is actually exercised.
-      else row[c] = NUMERIC.test(c) ? v : v;
+      else if (INTEGER.test(c)) row[c] = Number(v);
+      // Everything else stays a string, reproducing how PostgREST returns `numeric`.
+      // That is deliberate: it exercises the app's coercion at the boundary.
+      else row[c] = v;
     });
     return row;
   });
@@ -63,9 +67,30 @@ const universe = readFileSync(join(ROOT, "meridian-company-master-2138.csv"), "u
     }
     out.push(f);
     const [ISIN, Symbol, Name, Sector, IndustryGroup, MarketCap] = out;
-    return { id: i + 1, identifier: ISIN, symbol: Symbol, name: Name,
+    return { id: i + 1, asset_class: "equity", identifier: ISIN, symbol: Symbol, name: Name,
              sector: Sector, industry_group: IndustryGroup, market_cap: MarketCap || null };
   });
+
+// The four non-equity classes, appended in the same id order load_supabase.mjs assigns
+// so the fixture's universe_ids line up with the screen rows above.
+let nextId = universe.length;
+for (const [dir, assetClass, sectorField] of [
+  ["commodities", "commodity", "Category"], ["currencies", "currency", null],
+  ["indices", "index", "Region"], ["crypto", "crypto", null],
+]) {
+  const path = join(ROOT, `meridian-${dir}-master.csv`);
+  if (!existsSync(path)) continue;
+  const lines = readFileSync(path, "utf8").trim().split("\n");
+  const head = lines.shift().replace(/\r$/, "").split(",");
+  for (const line of lines) {
+    const c = line.replace(/\r$/, "").split(",");
+    const m = Object.fromEntries(head.map((h, i) => [h, c[i]]));
+    universe.push({ id: ++nextId, asset_class: assetClass, identifier: m.YahooTicker,
+                    symbol: m.Symbol, name: m.Name,
+                    sector: sectorField ? (m[sectorField] || null) : null,
+                    industry_group: null, market_cap: null });
+  }
+}
 
 const fixture = {
   universe,

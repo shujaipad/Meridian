@@ -147,7 +147,17 @@ console.log(`  ${master.length} instruments, ${prices.length.toLocaleString()} p
 // the first page — orphaning 1,138 instruments with no error anywhere.
 const ids = {};
 if (DRY) {
-  master.forEach((m, i) => { ids[m.ISIN] = i + 1; });
+  // Mirror the id order load_supabase.mjs assigns: equities first by ISIN, then each
+  // non-equity class by Yahoo ticker. Only equities were seeded here at first, which
+  // silently filtered every non-equity row out of the output — 0 technicals for all
+  // four classes, with no error, because the filter that drops rows with no
+  // universe_id cannot tell "not in the universe" from "not in the test's id map".
+  let n = 0;
+  master.forEach((m) => { ids[m.ISIN] = ++n; });
+  for (const c of [{ dir: "commodities" }, { dir: "currencies" }, { dir: "indices" }, { dir: "crypto" }]) {
+    const mp = join(BASE, `meridian-${c.dir}-master.csv`);
+    if (existsSync(mp)) readCSV(mp).forEach((m) => { ids[m.YahooTicker] = ++n; });
+  }
 } else
 for (let from = 0; ; from += 1000) {
   const { data, error } = await db.from("universe").select("id,identifier").range(from, from + 999);
@@ -231,6 +241,82 @@ const sectoral = sectorNames.map((name) => {
     rs_rating: r?.rating ?? null, rs_band: r?.band ?? null, rs_streak_days: r?.streakDays ?? null,
   };
 });
+
+// -------------------------------------------------- non-equity asset classes
+// RS Rating is computed WITHIN each class, never across. It is a percentile rank
+// against a population (§4.1), and the population has to be comparable — ranking
+// Bitcoin's momentum against the Japanese Yen's produces a number with no meaning.
+// The prototype already did this by giving each class its own screen; the pipeline
+// has to reproduce it deliberately.
+//
+// These classes get technicals and Golden Breakout only. No fundamentals (there are
+// none), no sectoral (no industries), no breadth (a 26-instrument universe has no
+// meaningful participation reading).
+const ASSET_CLASSES = [
+  { dir: "commodities", assetClass: "commodity" },
+  { dir: "currencies",  assetClass: "currency" },
+  { dir: "indices",     assetClass: "index" },
+  { dir: "crypto",      assetClass: "crypto" },
+];
+
+for (const c of ASSET_CLASSES) {
+  const pricePath = join(BASE, `meridian-${c.dir}-prices.csv`);
+  if (!existsSync(pricePath)) { console.log(`${c.dir}: no prices, skipping`); continue; }
+  const tickerOf = Object.fromEntries(
+    readCSV(join(BASE, `meridian-${c.dir}-master.csv`)).map((m) => [m.Symbol, m.YahooTicker]));
+
+  const rows = readCSV(pricePath).map((r) => ({
+    ISIN: r.Symbol, Date: r.Date,
+    High: num(r.High), Low: num(r.Low), Close: num(r.Close), Volume: num(r.Volume),
+  }));
+  const bySym = {};
+  rows.forEach((r) => { (bySym[r.ISIN] ||= []).push(r); });
+  const clsRS = computeRSUniverse(closesByKeyFromPrices(rows, "ISIN"));
+
+  const clsComputed = Object.entries(bySym).map(([sym, rws]) => {
+    const tech = computeTechnicalBlock(rws);
+    return { ISIN: sym, Symbol: sym, Name: sym, tech, fund: null };
+  }).filter((x) => x.tech);
+
+  // Each class has its own trading calendar, so its own as-of date. Indices closed
+  // 2026-09-08 while crypto has 2026-09-09; one shared date would misreport both.
+  const clsAsOf = rows.reduce((m, r) => (r.Date > m ? r.Date : m), "");
+
+  const clsTech = clsComputed.map((x) => {
+    const t = x.tech, r = clsRS[x.ISIN] || null;
+    return {
+      universe_id: ids[tickerOf[x.Symbol]], as_of_date: clsAsOf,
+      cmp: r4(t.cmp), change_pct: r4(t.changePct),
+      high52: r4(t.high52), low52: r4(t.low52),
+      pct_from_high52: r4(t.pctFromHigh52), pct_from_low52: r4(t.pctFromLow52),
+      ma3: r4(t.mas?.[3]), ma8: r4(t.mas?.[8]), ma30: r4(t.mas?.[30]),
+      ma50: r4(t.mas?.[50]), ma100: r4(t.mas?.[100]), ma200: r4(t.mas?.[200]),
+      rsi: r2(t.rsi),
+      s_signals: t.sSignals ?? null, m_signals: t.mSignals ?? null,
+      s_streaks: t.sStreaks ?? null, m_streaks: t.mStreaks ?? null,
+      rs_rating: r?.rating ?? null, rs_band: r?.band ?? null,
+      rs_streak_days: r?.streakDays ?? null, rs_capped: r?.capped ?? null,
+      // Null for FX, which has no volume at all — not zero, which would read as
+      // "traded nothing today" rather than "this instrument has no volume".
+      vol_breakout_pct: r2(t.volBreakoutPct),
+      ma200_slope_pct: r4(t.ma200SlopePct), ma200_rising: t.ma200Rising ?? null,
+      golden_cross_state: t.goldenCrossState ?? null,
+      golden_cross_streak: t.goldenCrossStreak?.streak ?? null,
+      separation_pct: r4(t.separationPct),
+    };
+  }).filter((r) => r.universe_id);
+
+  const clsCandidates = runGoldenBreakoutScreener(clsComputed).map((x, i) => ({
+    universe_id: ids[tickerOf[x.Symbol]], as_of_date: clsAsOf, rank: i + 1,
+    separation_pct: r4(x.tech.separationPct),
+    freshness_days: x.tech.goldenCrossStreak?.streak ?? null,
+    vol_breakout_pct: r2(x.tech.volBreakoutPct),
+  })).filter((r) => r.universe_id);
+
+  technicals.push(...clsTech);
+  candidates.push(...clsCandidates);
+  console.log(`  ${c.dir}: ${clsTech.length} technicals, ${clsCandidates.length} candidates, as of ${clsAsOf}`);
+}
 
 console.log("computing breadth...");
 const allDates = Array.from(new Set(prices.map((r) => r.Date))).sort();

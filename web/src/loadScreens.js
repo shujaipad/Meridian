@@ -34,6 +34,15 @@ async function readAll(table, columns) {
 // scattering guards through the screens.
 const n = (v) => (v === null || v === undefined || v === "" ? null : Number(v));
 
+// Join keys are normalised too, and not as idle defensiveness: `universe.id` and
+// `technicals_daily.universe_id` arriving as different JS types makes every Set and
+// object lookup miss, dropping every row without raising anything. That happened here
+// — one side a number, the other a string — and the symptom was screens that rendered
+// perfectly with no data and no error. PostgREST returns bigint as a JSON number today,
+// but does return it as a string past 2^53, so pinning the type is the fix rather than
+// relying on the current behaviour.
+const key = (v) => (v === null || v === undefined ? null : String(v));
+
 export async function loadScreens() {
   const [universe, technicals, scored, candidates, sectoral, breadth] = await Promise.all([
     readAll("universe", "id,identifier,symbol,name,sector,industry_group,market_cap"),
@@ -44,9 +53,14 @@ export async function loadScreens() {
     readAll("market_breadth_daily", "*"),
   ]);
 
-  const uniById = Object.fromEntries(universe.map((u) => [u.id, u]));
-  const techById = Object.fromEntries(technicals.map((t) => [t.universe_id, t]));
-  const scoreById = Object.fromEntries(scored.map((f) => [f.universe_id, f]));
+  // Split by asset class BEFORE anything else. The equity screens must never see the
+  // 102 commodity/currency/index/crypto instruments — they would otherwise appear in
+  // the Stocks table, inflate its count, and be ranked against equities by a filter
+  // that has no idea they are there.
+  const equities = universe.filter((u) => u.asset_class === "equity");
+  const CLASS_OF = { commodity: "commodities", currency: "currencies", index: "indices", crypto: "crypto" };
+  const techById = Object.fromEntries(technicals.map((t) => [key(t.universe_id), t]));
+  const scoreById = Object.fromEntries(scored.map((f) => [key(f.universe_id), f]));
 
   const techOf = (t) => t && ({
     cmp: n(t.cmp), changePct: n(t.change_pct),
@@ -66,9 +80,9 @@ export async function loadScreens() {
     },
   });
 
-  const computed = universe.map((u) => {
-    const t = techOf(techById[u.id]);
-    const f = scoreById[u.id];
+  const computed = equities.map((u) => {
+    const t = techOf(techById[key(u.id)]);
+    const f = scoreById[key(u.id)];
     const per = f?.per_metric || null;
     const fund = per && {
       ...per,
@@ -86,10 +100,14 @@ export async function loadScreens() {
   });
 
   const byId = Object.fromEntries(computed.map((c) => [c.ISIN, c]));
-  const idToIsin = Object.fromEntries(universe.map((u) => [u.id, u.identifier]));
+  const idToIsin = Object.fromEntries(equities.map((u) => [key(u.id), u.identifier]));
+  // .filter(Boolean) already drops non-equity candidates, since byId only holds
+  // equities — but relying on that would be accidental. Filter explicitly.
+  const equityIdSet = new Set(equities.map((u) => key(u.id)));
   const goldenBreakoutCandidates = candidates
-    .slice().sort((a, b) => a.rank - b.rank)
-    .map((c) => byId[idToIsin[c.universe_id]])
+    .filter((c) => equityIdSet.has(key(c.universe_id)))
+    .sort((a, b) => a.rank - b.rank)
+    .map((c) => byId[idToIsin[key(c.universe_id)]])
     .filter(Boolean);
 
   // Shaped like an instrument so the same screen components render it — the
@@ -125,10 +143,45 @@ export async function loadScreens() {
 
   // The as-of date comes from the published screen, not the clock — a morning the
   // pipeline has not run must read as yesterday (§5).
-  const asOfIso = technicals.reduce((m, t) => (t.as_of_date > m ? t.as_of_date : m), "") || null;
-  const stale = technicals.filter((t) => t.as_of_date < asOfIso).length;
+  // Per-class as-of dates, computed from that class's own rows: indices closed
+  // 2026-09-08 while crypto has 2026-09-09, and one shared date would misreport both.
+  const asOfFor = (rows) => {
+    const iso = rows.reduce((m, t) => (t.as_of_date > m ? t.as_of_date : m), "") || null;
+    return { iso, stale: rows.filter((t) => t.as_of_date < iso).length };
+  };
+
+  // --- the four non-equity classes, each its own self-contained screen ---
+  const candidateRankById = Object.fromEntries(candidates.map((c) => [c.universe_id, c.rank]));
+  const assets = {};
+  for (const [assetClass, screenKey] of Object.entries(CLASS_OF)) {
+    const members = universe.filter((u) => u.asset_class === assetClass);
+    const ids = new Set(members.map((m) => key(m.id)));
+    const rows = technicals.filter((t) => ids.has(key(t.universe_id)));
+    const clsComputed = members.map((u) => {
+      const t = techOf(techById[key(u.id)]);
+      return {
+        // Symbol doubles as the key here: these have no ISIN, which is precisely why
+        // the universe table carries identifier_type.
+        ISIN: u.symbol, Symbol: u.symbol, Name: u.name,
+        Sector: u.sector, Category: u.sector, Region: u.sector,
+        fund: null, tech: t || null,
+      };
+    });
+    const byIdLocal = Object.fromEntries(members.map((u) => [key(u.id), u.symbol]));
+    const clsCandidates = candidates
+      .filter((c) => ids.has(key(c.universe_id)))
+      .sort((a, b) => a.rank - b.rank)
+      .map((c) => clsComputed.find((x) => x.Symbol === byIdLocal[key(c.universe_id)]))
+      .filter(Boolean);
+    assets[screenKey] = { computed: clsComputed, candidates: clsCandidates, asOf: asOfFor(rows) };
+  }
+
+  const equityIds = new Set(equities.map((u) => key(u.id)));
+  const equityTech = technicals.filter((t) => equityIds.has(key(t.universe_id)));
+  const { iso: asOfIso, stale } = asOfFor(equityTech);
 
   return {
+    assets,
     computed,
     goldenBreakoutCandidates,
     sectoralComputed,

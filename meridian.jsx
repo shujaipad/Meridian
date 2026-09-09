@@ -379,7 +379,10 @@ function NumFilterPopover({ colKey, label, current, onApply, onClear, onClose })
 // A lightweight sibling to GenericAssetScreen — reads the SAME persisted storage (so it
 // stays in sync with whatever's loaded on the base data tab without sharing React state),
 // computes technicals + RS, and runs the Golden Breakout screener against it.
-function GenericGoldenBreakoutScreen({ config, onAsOf }) {
+// `dataset` mirrors App's seam (§6.2): given one, the screen renders what the
+// pipeline published and never touches storage or the engine. Given nothing, it
+// behaves exactly as the prototype does.
+function GenericGoldenBreakoutScreen({ config, onAsOf, dataset = null }) {
   const [master, setMaster] = useState([]);
   const [prices, setPrices] = useState([]);
 
@@ -397,26 +400,30 @@ function GenericGoldenBreakoutScreen({ config, onAsOf }) {
   // Report freshness up to the global header, which sits above the asset-class tabs
   // and so cannot read this component's price state directly. Keyed by class, because
   // each one is loaded independently and they will not share an as-of date.
-  const asOf = useMemo(() => priceAsOfSummary(prices), [prices]);
+  const asOf = useMemo(
+    () => (dataset ? dataset.asOf : priceAsOfSummary(prices)), [dataset, prices]);
   useEffect(() => { onAsOf?.(asOf); }, [asOf, onAsOf]);
 
   const closesById = useMemo(() => closesByKeyFromPrices(prices, "ISIN"), [prices]);
   const rsUniverse = useMemo(() => computeRSUniverse(closesById), [closesById]);
   const computed = useMemo(() => {
+    if (dataset) return dataset.computed;
     const priceBySym = {};
     prices.forEach((r) => { (priceBySym[r.ISIN] ||= []).push(r); });
     return master.map((m) => {
       const tech = computeTechnicalBlock(priceBySym[m.Symbol] || []);
       return { ...m, ISIN: m.Symbol, fund: null, tech: tech ? { ...tech, rsRating: rsUniverse[m.Symbol] || null } : tech };
     });
-  }, [master, prices, rsUniverse]);
+  }, [dataset, master, prices, rsUniverse]);
 
-  const candidates = useMemo(() => runGoldenBreakoutScreener(computed), [computed]);
+  const candidates = useMemo(
+    () => (dataset ? dataset.candidates : runGoldenBreakoutScreener(computed)),
+    [dataset, computed]);
 
   return <GoldenBreakoutScreen candidates={candidates} accent={config.accent} hasFundamentals={false} itemLabel={config.labelSingular.charAt(0).toUpperCase() + config.labelSingular.slice(1)} />;
 }
 
-function GenericAssetScreen({ config, onAsOf }) {
+function GenericAssetScreen({ config, onAsOf, dataset = null }) {
   const { key, label, labelSingular, accent, storagePrefix, extraMasterFields, sampleMaster, samplePrices } = config;
   const [master, setMaster] = useState([]);
   const [prices, setPrices] = useState([]);
@@ -449,7 +456,8 @@ function GenericAssetScreen({ config, onAsOf }) {
 
   // Report freshness up to the global header, which sits above the asset-class tabs
   // and so cannot read this component's price state directly.
-  const asOf = useMemo(() => priceAsOfSummary(prices), [prices]);
+  const asOf = useMemo(
+    () => (dataset ? dataset.asOf : priceAsOfSummary(prices)), [dataset, prices]);
   useEffect(() => { onAsOf?.(asOf); }, [asOf, onAsOf]);
 
   const persist = useCallback(async (next) => {
@@ -530,13 +538,14 @@ function GenericAssetScreen({ config, onAsOf }) {
   const closesById = useMemo(() => closesByKeyFromPrices(prices, "ISIN"), [prices]);
   const rsUniverse = useMemo(() => computeRSUniverse(closesById), [closesById]);
   const computed = useMemo(() => {
+    if (dataset) return dataset.computed;
     const priceBySym = {};
     prices.forEach((r) => { (priceBySym[r.ISIN] ||= []).push(r); });
     return master.map((m) => {
       const tech = computeTechnicalBlock(priceBySym[m.Symbol] || []);
       return { ...m, tech: tech ? { ...tech, rsRating: rsUniverse[m.Symbol] || null } : tech };
     });
-  }, [master, prices, rsUniverse]);
+  }, [dataset, master, prices, rsUniverse]);
 
   const FILTERABLE = {
     changePct: { label: "1D %", accessor: (s) => s.tech?.changePct },
@@ -612,10 +621,14 @@ function GenericAssetScreen({ config, onAsOf }) {
     </th>
   );
 
-  const hasData = master.length > 0;
+  const hasData = dataset ? dataset.computed.length > 0 : master.length > 0;
 
   return (
     <div onClick={() => setOpenFilterKey(null)}>
+      {/* Upload and universe-management controls are prototype-only. In production
+          the pipeline owns this data (§6.2), and offering an "add instrument" button
+          that writes to browser storage would be a lie — the next publish overwrites it. */}
+      {!dataset && (
       <div style={{ padding: "16px 24px", background: T.surface, borderBottom: `1px solid ${T.border}` }}>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           {[{ kind: "master", label: `${label} master` }, { kind: "prices", label: "Prices (daily EOD)" }].map(({ kind, label: btnLabel }) => (
@@ -665,6 +678,7 @@ function GenericAssetScreen({ config, onAsOf }) {
           </div>
         )}
       </div>
+      )}
 
       {!hasData ? (
         <div style={{ padding: 60, textAlign: "center", color: T.textDim }}>
@@ -1753,7 +1767,11 @@ export default function App({ dataset = null }) {
       <div style={{ borderBottom: `1px solid ${T.border}`, padding: "18px 24px", display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
         <div>
           <div style={{ fontFamily: "'IBM Plex Serif', serif", fontSize: 22, fontWeight: 600, letterSpacing: "-0.01em", color: T.gold }}>Meridian</div>
-          <div style={{ fontSize: 12, color: T.textDim, marginTop: 2 }}>Fundamental + technical signal ledger — Indian equities</div>
+          <div style={{ fontSize: 12, color: T.textDim, marginTop: 2 }}>
+            {activeAssetClass === "equities"
+              ? "Fundamental + technical signal ledger — Indian equities"
+              : `Technical signal ledger — ${ASSET_CLASSES[activeAssetClass].label}`}
+          </div>
         </div>
         <div style={{ fontSize: 11, color: T.textDim, fontFamily: "'IBM Plex Mono', monospace", display: "flex", alignItems: "center", gap: 14 }}>
           {activeAssetClass === "equities"
@@ -2179,17 +2197,17 @@ export default function App({ dataset = null }) {
         <MarketBreadthScreen series={breadthSeries} />
       )}
 
-      {activeAssetClass === "commodities" && commoditiesSubTab === "base" && <GenericAssetScreen config={ASSET_CLASSES.commodities} onAsOf={asOfReporters.commodities} />}
-      {activeAssetClass === "commodities" && commoditiesSubTab === "breakout" && <GenericGoldenBreakoutScreen config={ASSET_CLASSES.commodities} onAsOf={asOfReporters.commodities} />}
+      {activeAssetClass === "commodities" && commoditiesSubTab === "base" && <GenericAssetScreen config={ASSET_CLASSES.commodities} onAsOf={asOfReporters.commodities} dataset={dataset?.assets?.commodities ?? null} />}
+      {activeAssetClass === "commodities" && commoditiesSubTab === "breakout" && <GenericGoldenBreakoutScreen config={ASSET_CLASSES.commodities} onAsOf={asOfReporters.commodities} dataset={dataset?.assets?.commodities ?? null} />}
 
-      {activeAssetClass === "indices" && indicesSubTab === "base" && <GenericAssetScreen config={ASSET_CLASSES.indices} onAsOf={asOfReporters.indices} />}
-      {activeAssetClass === "indices" && indicesSubTab === "breakout" && <GenericGoldenBreakoutScreen config={ASSET_CLASSES.indices} onAsOf={asOfReporters.indices} />}
+      {activeAssetClass === "indices" && indicesSubTab === "base" && <GenericAssetScreen config={ASSET_CLASSES.indices} onAsOf={asOfReporters.indices} dataset={dataset?.assets?.indices ?? null} />}
+      {activeAssetClass === "indices" && indicesSubTab === "breakout" && <GenericGoldenBreakoutScreen config={ASSET_CLASSES.indices} onAsOf={asOfReporters.indices} dataset={dataset?.assets?.indices ?? null} />}
 
-      {activeAssetClass === "crypto" && cryptoSubTab === "base" && <GenericAssetScreen config={ASSET_CLASSES.crypto} onAsOf={asOfReporters.crypto} />}
-      {activeAssetClass === "crypto" && cryptoSubTab === "breakout" && <GenericGoldenBreakoutScreen config={ASSET_CLASSES.crypto} onAsOf={asOfReporters.crypto} />}
+      {activeAssetClass === "crypto" && cryptoSubTab === "base" && <GenericAssetScreen config={ASSET_CLASSES.crypto} onAsOf={asOfReporters.crypto} dataset={dataset?.assets?.crypto ?? null} />}
+      {activeAssetClass === "crypto" && cryptoSubTab === "breakout" && <GenericGoldenBreakoutScreen config={ASSET_CLASSES.crypto} onAsOf={asOfReporters.crypto} dataset={dataset?.assets?.crypto ?? null} />}
 
-      {activeAssetClass === "currencies" && currenciesSubTab === "base" && <GenericAssetScreen config={ASSET_CLASSES.currencies} onAsOf={asOfReporters.currencies} />}
-      {activeAssetClass === "currencies" && currenciesSubTab === "breakout" && <GenericGoldenBreakoutScreen config={ASSET_CLASSES.currencies} onAsOf={asOfReporters.currencies} />}
+      {activeAssetClass === "currencies" && currenciesSubTab === "base" && <GenericAssetScreen config={ASSET_CLASSES.currencies} onAsOf={asOfReporters.currencies} dataset={dataset?.assets?.currencies ?? null} />}
+      {activeAssetClass === "currencies" && currenciesSubTab === "breakout" && <GenericGoldenBreakoutScreen config={ASSET_CLASSES.currencies} onAsOf={asOfReporters.currencies} dataset={dataset?.assets?.currencies ?? null} />}
     </div>
   );
 }
