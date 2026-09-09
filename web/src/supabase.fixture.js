@@ -13,12 +13,29 @@ export const configError = null;
 
 const session = { user: { id: "fixture-user", email: "fixture@meridian.local" } };
 
+// Real Supabase notifies subscribers when a sign-in succeeds, and the app relies on
+// that to swap the login screen out. A stub that only returns a session leaves the
+// success path untested — which is the one path that matters most.
+const listeners = new Set();
+const notify = (event, s) => listeners.forEach((cb) => cb(event, s));
+const loggedOut = import.meta.env.VITE_FIXTURE_LOGGED_OUT === "1";
+
 export const supabase = {
   auth: {
-    getSession: async () => ({ data: { session } }),
-    onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
-    signOut: async () => ({ error: null }),
+    getSession: async () => ({ data: { session: loggedOut ? null : session } }),
+    onAuthStateChange: (cb) => {
+      listeners.add(cb);
+      return { data: { subscription: { unsubscribe: () => listeners.delete(cb) } } };
+    },
+    signOut: async () => { notify("SIGNED_OUT", null); return { error: null }; },
     signInWithOtp: async () => ({ error: null }),
+    // Mirrors Supabase closely enough to exercise the screen: the right password
+    // signs in and fires the state change, anything else returns the same error text.
+    signInWithPassword: async ({ password }) => {
+      if (password !== "correct-horse") return { data: {}, error: { message: "Invalid login credentials" } };
+      notify("SIGNED_IN", session);
+      return { data: { session }, error: null };
+    },
   },
   from(table) {
     const rows = fixture[table] || [];
