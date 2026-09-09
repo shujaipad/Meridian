@@ -1557,7 +1557,13 @@ For quick reference; each item traces to a fuller explanation above.
 - [x] Daily sweep runs 14:30 UTC / 20:00 IST, retries 16:30 and 18:30 UTC — §3.5
 - [x] Quarterly full re-pull retained as backup check, not redundant with daily job
 - [x] Compute: backend, Node.js, reusing Meridian's existing JS functions unmodified
-- [x] Meridian: pure display/filter layer in production, zero compute
+- [x] Meridian: pure display/filter layer in production, zero compute — with one
+      recorded exception: `loadScreens.js` runs `runGoldenBreakoutScreener` over the 120
+      already-published industry rows to derive the Sectoral Breakout list. It is the
+      engine's own function over published values, not a second implementation, and it
+      is O(120); publishing it instead would need a table keyed on industry_group,
+      since `golden_breakout_candidates` keys on a `universe_id` that industries do not
+      have. Noted here so the lock and the code agree on paper. (Audit 2026-09-09.)
 - [x] Database: Supabase (Postgres, free tier)
 - [x] Compute host: DigitalOcean VPS (~$5–6/mo)
 - [x] Notifications: email
@@ -1750,6 +1756,42 @@ For quick reference; each item traces to a fuller explanation above.
    Commodities/Currencies/Indices/Crypto/Sectoral currently reuse the identical thresholds with an
    explicit in-app disclaimer that they haven't been separately tested — not a
    confirmed-safe assumption.
+3a. **158 instruments in the loaded universe fall below the §3.1 200-bar minimum, which
+   §3.1 says should have excluded them outright.** Found by audit 2026-09-09, measured
+   from the committed price files rather than estimated:
+
+   | | |
+   |---|---|
+   | in the master, no price history at all | 49 |
+   | priced, but fewer than 200 bars | 109 |
+   | of those, under 50 bars | 50 |
+   | fewest | 1 bar (Priority Jewels, Tipco Engineering, ESDS Software) |
+   | **total below the rule** | **158 of 2,138 — 7.4%** |
+
+   §3.1's wording is unambiguous: "Any scrip with less — IPOs, above all — is excluded
+   outright, **not carried with nulled signals until it ages in**." That is exactly what
+   is happening: they load, they appear in the Stocks table with blank technicals, and
+   they inflate the "2,138 stocks loaded" count. The document already records the
+   consequence as a bare number in §6.8's load table ("clearing the §3.1 200-bar rule |
+   1,980") without connecting it back to the rule it violates.
+
+   No model output is corrupted by them — RS Rating needs 63 bars minimum and the Golden
+   Breakout gates need a 200DMA, so short-history instruments drop out of both on their
+   own. The one real effect is on the **Composite Fundamental Score**: 62 of the 158
+   carry fundamentals and so sit in the percentile population, 3.8% of the 1,648 stocks
+   being ranked. Quintile boundaries are therefore drawn over a population 3.8% larger
+   than the spec intends.
+
+   **Not fixed unilaterally** — removing 158 instruments from a live universe is a data
+   decision, and §3.1's removal policy is a permanent hard delete. Three options:
+   (a) enforce the rule as written and drop them; (b) keep them and amend §3.1 to say
+   short-history instruments are carried but excluded from the scoring population;
+   (c) keep them as-is and accept the 3.8% dilution. Needs a decision, not a default.
+
+   Also: `check_data_integrity.py` asserts the 200-bar rule for all four non-equity
+   classes and **not** for equities — which is why 158 violations sit under an
+   all-green report. Whichever option is chosen, the equity assertion should exist.
+
 4. **Timing of the Claude Code migration** — deliberately deferred ("closer to
    production" was the original trigger condition); this document is intended to make
    that transition low-friction whenever it happens, not to force the timing.
@@ -2220,6 +2262,41 @@ fetch_prices.py  →  clean_price_calendar.py  →  check_data_integrity.py
 
 The engine is identical in both. Only what feeds it and what consumes it changes
 — which is the whole point of §6.2, and what `verify_port` exists to keep honest.
+
+---
+
+## 11a. Shared pipeline plumbing — `meridian-io.js` (added 2026-09-09)
+
+`meridian-engine.js` holds the model. `meridian-io.js` holds everything the pipeline
+scripts need that is *not* the model: the quote-aware CSV reader, the numeric coercions
+(`num`/`r2`/`r4`), the transient-failure retry, and `readAll` — the PostgREST paging
+loop.
+
+It exists because each of those had been copied by hand into three to seven scripts.
+`readCSV` and `withRetry` were byte-identical across files; `splitCSVLine` was the same
+algorithm written twice with different variable names, and a third time inline in
+`web/make-fixture.mjs`. **`readAll` had seven separate hand-written copies** — seven
+mitigations for the single failure this codebase fears most, that PostgREST caps a
+response at 1,000 rows and returns the first page with no error at all.
+
+Copies drift, and the drift is silent. Both bugs found on 2026-09-09 were exactly that:
+the sectoral technical row was a third copy of a builder that had gained thirteen
+columns elsewhere, and the test fixture's `select` was a second implementation of
+PostgREST's that did not project columns. §7.2 rejects duplicate implementations of the
+model; the same reasoning applies to a CSV parser and a paging loop.
+
+`readAll` takes an optional `onPage` callback so reads that fold into something smaller
+stay streaming — the 800-day `prices_daily` window is over two million rows, and
+materialising it before reducing it would hold both at once for nothing.
+
+**Verified behaviour-preserving by output diff, not by inspection:** the full
+`compute_and_publish.mjs --dry-run` output is byte-identical before and after, and the
+loader dry run reproduces every recorded count exactly (universe 2,240; prices 2,277,516
+of which 2,140,491 equity; fundamentals 6,477).
+
+`web/src/loadScreens.js` deliberately keeps its own `readAll`: it runs in the browser
+against the anon-key client, and importing a Node module into the bundle to save nine
+lines would be the wrong trade.
 
 ---
 

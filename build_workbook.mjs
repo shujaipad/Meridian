@@ -21,6 +21,8 @@ import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { num, r2 } from "./meridian-io.js";
+
 import {
   computeAll,
   computeRSUniverse,
@@ -57,8 +59,6 @@ function parseCSV(text) {
              .map((r) => Object.fromEntries(head.map((h, i) => [h, r[i]])));
 }
 
-const num = (v) => (v === "" || v == null ? null : Number(v));
-const r2 = (v) => (v == null || Number.isNaN(v) ? null : Math.round(v * 100) / 100);
 
 console.error("reading inputs...");
 const master = parseCSV(readFileSync(join(BASE, "meridian-company-master-2138.csv"), "utf8"))

@@ -50,6 +50,8 @@ import { createInterface } from "node:readline";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { num, readAll, readCSV, sleep, splitCSVLine, TRANSIENT } from "./meridian-io.js";
+
 const BASE = dirname(fileURLToPath(import.meta.url));
 const PROGRESS = join(BASE,
   process.argv.includes("--dry-run") ? "dryrun-progress.json" : "load_supabase_progress.json");
@@ -114,35 +116,7 @@ function dryWrite(table, rows) {
 const progress = existsSync(PROGRESS) ? JSON.parse(readFileSync(PROGRESS, "utf8")) : {};
 const save = () => writeFileSync(PROGRESS, JSON.stringify(progress, null, 2));
 
-const num = (v) => (v === "" || v == null ? null : Number(v));
 const int = (v) => (v === "" || v == null ? null : Math.round(Number(v)));
-
-// 75 master rows carry quoted fields with embedded commas ("Food, Beverages &
-// Tobacco"), so a split(",") would corrupt them.
-function splitCSVLine(line) {
-  const out = [];
-  let field = "", q = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (q) {
-      if (c === '"') { if (line[i + 1] === '"') { field += '"'; i++; } else q = false; }
-      else field += c;
-    } else if (c === '"') q = true;
-    else if (c === ",") { out.push(field); field = ""; }
-    else field += c;
-  }
-  out.push(field);
-  return out;
-}
-
-function readCSV(path) {
-  const lines = readFileSync(path, "utf8").split("\n").filter((l) => l.trim() !== "");
-  const head = splitCSVLine(lines.shift().replace(/\r$/, ""));
-  return lines.map((l) => Object.fromEntries(
-    splitCSVLine(l.replace(/\r$/, "")).map((v, i) => [head[i], v])));
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // A dropped connection is not a reason to abandon a 2.3-million-row upload. Uploading
 // this much over a home connection makes a transient TCP reset near-certain at some
@@ -150,11 +124,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // aborting the whole job. Every write here is an upsert on a natural key, so retrying
 // one is always safe — it either lands or is a no-op.
 //
-// Retried only for TRANSPORT failures. A constraint violation, a bad column or a
-// rejected key is deterministic: retrying it just fails four more times slowly and
-// buries the real message. Those still abort immediately.
-const TRANSIENT = /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|network|502|503|504|timeout/i;
-
+// This keeps its own loop rather than using meridian-io's withRetry, because the dry
+// run has to divert to a TSV before any client exists. Only the TRANSIENT test and
+// the backoff shape are shared.
 async function upsert(table, rows, onConflict, label) {
   if (DRY) { dryWrite(table, rows); return; }
   let lastError;
@@ -273,13 +245,8 @@ async function idByIsin() {
     return map;
   }
   const map = {};
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await db.from("universe")
-      .select("id,identifier").range(from, from + 999);
-    if (error) { console.error(`reading universe: ${error.message}`); process.exit(1); }
-    data.forEach((r) => { map[r.identifier] = r.id; });
-    if (data.length < 1000) break;
-  }
+  await readAll(db, "universe", "id,identifier",
+    { onPage: (rows) => rows.forEach((r) => { map[r.identifier] = r.id; }) });
   return map;
 }
 

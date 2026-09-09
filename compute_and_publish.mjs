@@ -38,9 +38,11 @@
  * date instead.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { num, r2, r4, readAll, readCSV, withRetry } from "./meridian-io.js";
 
 import {
   bandOfRSRating, closesByKeyFromPrices, computeAll, computeBreadthSeries,
@@ -89,49 +91,11 @@ function dryWrite(table, rows) {
 }
 
 // ---------------------------------------------------------------- csv
-function splitCSVLine(line) {
-  const out = []; let f = "", q = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (q) { if (c === '"') { if (line[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += c; }
-    else if (c === '"') q = true;
-    else if (c === ",") { out.push(f); f = ""; }
-    else f += c;
-  }
-  out.push(f); return out;
-}
-function readCSV(path) {
-  const lines = readFileSync(path, "utf8").split("\n").filter((l) => l.trim() !== "");
-  const head = splitCSVLine(lines.shift().replace(/\r$/, ""));
-  return lines.map((l) => Object.fromEntries(
-    splitCSVLine(l.replace(/\r$/, "")).map((v, i) => [head[i], v])));
-}
-const num = (v) => (v === "" || v == null ? null : Number(v));
-const r4 = (v) => (v == null || Number.isNaN(v) ? null : Math.round(v * 1e4) / 1e4);
-const r2 = (v) => (v == null || Number.isNaN(v) ? null : Math.round(v * 100) / 100);
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Transport failures are retried; deterministic ones are not. A home connection
 // dropping mid-upload aborted the first real load, and every write here is an upsert
 // on a natural key, so retrying one either lands or is a no-op.
-const TRANSIENT = /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|network|502|503|504|timeout/i;
-
-async function withRetry(fn, label) {
-  let lastError;
-  for (let attempt = 0; attempt < 5; attempt++) {
-    let error;
-    try { ({ error } = await fn()); }
-    catch (e) { error = { message: String(e?.message || e) }; }
-    if (!error) return;
-    lastError = error;
-    if (!TRANSIENT.test(error.message || "") || attempt === 4) break;
-    const wait = 2 ** attempt * 1000 + Math.random() * 500;
-    console.error(`\n  ${label}: ${error.message} — retrying in ${(wait / 1000).toFixed(1)}s`);
-    await sleep(wait);
-  }
-  throw new Error(`${label}: ${lastError.message}`);
-}
 
 async function write(table, rows, { onConflict, label }) {
   if (DRY) { dryWrite(table, rows); console.log(`  ${table}: ${rows.length} rows (dry run)`); return; }
@@ -195,12 +159,8 @@ if (DRY) {
     if (existsSync(mp)) readCSV(mp).forEach((m) => { ids[m.YahooTicker] = ++n; });
   }
 } else
-for (let from = 0; ; from += 1000) {
-  const { data, error } = await db.from("universe").select("id,identifier").range(from, from + 999);
-  if (error) { console.error(`reading universe: ${error.message}`); process.exit(1); }
-  data.forEach((r) => { ids[r.identifier] = r.id; });
-  if (data.length < 1000) break;
-}
+await readAll(db, "universe", "id,identifier",
+  { onPage: (rows) => rows.forEach((r) => { ids[r.identifier] = r.id; }) });
 console.log(`  universe id map: ${Object.keys(ids).length} instruments`);
 
 // --from-db: pull the trailing window for EQUITIES here. The non-equity classes read
@@ -209,31 +169,29 @@ console.log(`  universe id map: ${Object.keys(ids).length} instruments`);
 if (FROM_DB) {
   const cutoff = new Date(Date.now() - DB_WINDOW_DAYS * 86400_000).toISOString().slice(0, 10);
   const isinById = {};
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await db.from("universe")
-      .select("id,identifier").eq("asset_class", "equity").range(from, from + 999);
-    if (error) { console.error(`reading equity universe: ${error.message}`); process.exit(1); }
-    data.forEach((r) => { isinById[r.id] = r.identifier; });
-    if (data.length < 1000) break;
-  }
+  await readAll(db, "universe", "id,identifier", {
+    filter: (q) => q.eq("asset_class", "equity"),
+    onPage: (rows) => rows.forEach((r) => { isinById[r.id] = r.identifier; }),
+  });
   console.log(`  reading prices_daily since ${cutoff} ...`);
   let n = 0;
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await db.from("prices_daily")
-      .select("universe_id,trade_date,high,low,close,volume")
-      .gte("trade_date", cutoff).order("universe_id").order("trade_date")
-      .range(from, from + 999);
-    if (error) { console.error(`reading prices_daily: ${error.message}`); process.exit(1); }
-    for (const r of data) {
-      const isin = isinById[r.universe_id];
-      if (!isin) continue;                       // a non-equity row; handled per class below
-      prices.push({ ISIN: isin, Date: r.trade_date, High: num(r.high), Low: num(r.low),
-                    Close: num(r.close), Volume: num(r.volume) });
-    }
-    n += data.length;
-    if (n % 100000 === 0) process.stdout.write(`\r    ${n.toLocaleString()} rows`);
-    if (data.length < 1000) break;
-  }
+  await readAll(db, "prices_daily", "universe_id,trade_date,high,low,close,volume", {
+    filter: (q) => q.gte("trade_date", cutoff).order("universe_id").order("trade_date"),
+    onPage: (data) => {
+      for (const r of data) {
+        const isin = isinById[r.universe_id];
+        if (!isin) continue;                     // a non-equity row; handled per class below
+        prices.push({ ISIN: isin, Date: r.trade_date, High: num(r.high), Low: num(r.low),
+                      Close: num(r.close), Volume: num(r.volume) });
+      }
+      n += data.length;
+      // Newline, not \r. Actions captures stdout through a pipe rather than a TTY, so
+      // a carriage-return counter never redraws -- it just never appears, and a step
+      // killed mid-read leaves no record of how far it got. Same defect as the daily
+      // fetch's progress bar, same fix.
+      if (n % 200000 === 0) console.log(`    ${n.toLocaleString()} rows`);
+    },
+  });
   console.log(`\n  ${prices.length.toLocaleString()} equity price rows from the database`);
 }
 // Check that every EQUITY in the master is present, not that the row counts match.
@@ -366,27 +324,22 @@ for (const c of ASSET_CLASSES) {
     // indices' date, or vice versa.
     const cutoff = new Date(Date.now() - DB_WINDOW_DAYS * 86400_000).toISOString().slice(0, 10);
     const symById = {};
-    for (let from = 0; ; from += 1000) {
-      const { data, error } = await db.from("universe")
-        .select("id,symbol").eq("asset_class", c.assetClass).range(from, from + 999);
-      if (error) { console.error(`reading ${c.dir} universe: ${error.message}`); process.exit(1); }
-      data.forEach((r) => { symById[r.id] = r.symbol; });
-      if (data.length < 1000) break;
-    }
+    await readAll(db, "universe", "id,symbol", {
+      filter: (q) => q.eq("asset_class", c.assetClass),
+      onPage: (rows) => rows.forEach((r) => { symById[r.id] = r.symbol; }),
+    });
     const memberIds = new Set(Object.keys(symById).map(Number));
     rows = [];
-    for (let from = 0; ; from += 1000) {
-      const { data, error } = await db.from("prices_daily")
-        .select("universe_id,trade_date,high,low,close,volume")
-        .in("universe_id", [...memberIds]).gte("trade_date", cutoff)
-        .order("universe_id").order("trade_date").range(from, from + 999);
-      if (error) { console.error(`reading ${c.dir} prices: ${error.message}`); process.exit(1); }
-      for (const r of data) {
-        rows.push({ ISIN: symById[r.universe_id], Date: r.trade_date,
-                    High: num(r.high), Low: num(r.low), Close: num(r.close), Volume: num(r.volume) });
-      }
-      if (data.length < 1000) break;
-    }
+    await readAll(db, "prices_daily", "universe_id,trade_date,high,low,close,volume", {
+      filter: (q) => q.in("universe_id", [...memberIds]).gte("trade_date", cutoff)
+                      .order("universe_id").order("trade_date"),
+      onPage: (data) => {
+        for (const r of data) {
+          rows.push({ ISIN: symById[r.universe_id], Date: r.trade_date,
+                      High: num(r.high), Low: num(r.low), Close: num(r.close), Volume: num(r.volume) });
+        }
+      },
+    });
   } else {
     rows = readCSV(pricePath).map((r) => ({
       ISIN: r.Symbol, Date: r.Date,

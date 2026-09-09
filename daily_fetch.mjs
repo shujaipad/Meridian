@@ -39,6 +39,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { r4, readAll, sleep, withRetry } from "./meridian-io.js";
+
 const BASE = dirname(fileURLToPath(import.meta.url));
 const CHART = "https://query1.finance.yahoo.com/v8/finance/chart/";
 const UA = { "User-Agent": "Mozilla/5.0" };
@@ -71,7 +73,6 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 const { createClient } = await import("@supabase/supabase-js");
 const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 
-const r4 = (v) => (v == null || Number.isNaN(v) ? null : Math.round(v * 1e4) / 1e4);
 
 // ---------------------------------------------------------------- fetch
 // Tally of what the remote actually returned, printed with every heartbeat. Without
@@ -152,40 +153,7 @@ function eventsInWindow(result) {
 }
 
 // ---------------------------------------------------------------- db
-async function readAll(table, columns, filter) {
-  const out = [];
-  for (let from = 0; ; from += 1000) {
-    let q = db.from(table).select(columns).range(from, from + 999);
-    if (filter) q = filter(q);
-    const { data, error } = await q;
-    if (error) throw new Error(`${table}: ${error.message}`);
-    out.push(...data);
-    if (data.length < 1000) return out;
-  }
-}
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// Transport failures are retried; deterministic ones are not. A home connection
-// dropping mid-upload aborted the first real load, and every write here is an upsert
-// on a natural key, so retrying one either lands or is a no-op.
-const TRANSIENT = /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|network|502|503|504|timeout/i;
-
-async function withRetry(fn, label) {
-  let lastError;
-  for (let attempt = 0; attempt < 5; attempt++) {
-    let error;
-    try { ({ error } = await fn()); }
-    catch (e) { error = { message: String(e?.message || e) }; }
-    if (!error) return;
-    lastError = error;
-    if (!TRANSIENT.test(error.message || "") || attempt === 4) break;
-    const wait = 2 ** attempt * 1000 + Math.random() * 500;
-    console.error(`\n  ${label}: ${error.message} — retrying in ${(wait / 1000).toFixed(1)}s`);
-    await sleep(wait);
-  }
-  throw new Error(`${label}: ${lastError.message}`);
-}
 
 async function upsertPrices(rows, label) {
   if (DRY || !rows.length) return;
@@ -200,16 +168,16 @@ async function upsertPrices(rows, label) {
 const t0 = Date.now();
 console.log(`daily fetch ${DRY ? "(DRY RUN — nothing is written)" : ""}`);
 
-const universe = await readAll("universe", "id,asset_class,identifier,symbol",
-                               (q) => q.eq("status", "active"));
+const universe = await readAll(db, "universe", "id,asset_class,identifier,symbol",
+                               { filter: (q) => q.eq("status", "active") });
 const targets = LIMIT ? universe.slice(0, LIMIT) : universe;
 console.log(`universe: ${targets.length} active instruments`);
 
 // The overlap detector needs what we already hold. One query per instrument would be
 // 2,240 round trips; instead read the recent window for everything at once.
 const since = new Date(Date.now() - 45 * 86400_000).toISOString().slice(0, 10);
-const stored = await readAll("prices_daily", "universe_id,trade_date,close",
-                             (q) => q.gte("trade_date", since));
+const stored = await readAll(db, "prices_daily", "universe_id,trade_date,close",
+                             { filter: (q) => q.gte("trade_date", since) });
 const storedBy = {};
 for (const r of stored) (storedBy[r.universe_id] ||= {})[r.trade_date] = Number(r.close);
 console.log(`stored overlap window: ${stored.length.toLocaleString()} rows since ${since}`);
