@@ -1,0 +1,512 @@
+{
+  "commodities:CRUDEWTI": {
+    "ticker": "CL=F",
+    "bars": 1257,
+    "dropped": 3
+  },
+  "commodities:CRUDEBRENT": {
+    "ticker": "BZ=F",
+    "bars": 1258,
+    "dropped": 2
+  },
+  "commodities:NATGAS": {
+    "ticker": "NG=F",
+    "bars": 1258,
+    "dropped": 2
+  },
+  "commodities:RBOB": {
+    "ticker": "RB=F",
+    "bars": 1258,
+    "dropped": 2
+  },
+  "commodities:HEATOIL": {
+    "ticker": "HO=F",
+    "bars": 1258,
+    "dropped": 2
+  },
+  "commodities:COPPER": {
+    "ticker": "HG=F",
+    "bars": 1258,
+    "dropped": 2
+  },
+  "commodities:ALUMINUM": {
+    "ticker": "ALI=F",
+    "bars": 1256,
+    "dropped": 4
+  },
+  "commodities:ZINC": {
+    "ticker": "ZNC=F",
+    "bars": 1255,
+    "dropped": 5
+  },
+  "commodities:IRONORE": {
+    "ticker": "TIO=F",
+    "bars": 1255,
+    "dropped": 266
+  },
+  "commodities:STEEL": {
+    "ticker": "HRC=F",
+    "bars": 1255,
+    "dropped": 5
+  },
+  "commodities:GOLD": {
+    "ticker": "GC=F",
+    "bars": 1257,
+    "dropped": 3
+  },
+  "commodities:SILVER": {
+    "ticker": "SI=F",
+    "bars": 1257,
+    "dropped": 3
+  },
+  "commodities:PLATINUM": {
+    "ticker": "PL=F",
+    "bars": 1257,
+    "dropped": 3
+  },
+  "commodities:PALLADIUM": {
+    "ticker": "PA=F",
+    "bars": 1256,
+    "dropped": 4
+  },
+  "commodities:SOYBEAN": {
+    "ticker": "ZS=F",
+    "bars": 1256,
+    "dropped": 4
+  },
+  "commodities:SOYOIL": {
+    "ticker": "ZL=F",
+    "bars": 1256,
+    "dropped": 4
+  },
+  "commodities:SOYMEAL": {
+    "ticker": "ZM=F",
+    "bars": 1256,
+    "dropped": 4
+  },
+  "commodities:WHEAT": {
+    "ticker": "ZW=F",
+    "bars": 1256,
+    "dropped": 4
+  },
+  "commodities:CORN": {
+    "ticker": "ZC=F",
+    "bars": 1256,
+    "dropped": 4
+  },
+  "commodities:COFFEE": {
+    "ticker": "KC=F",
+    "bars": 1257,
+    "dropped": 3
+  },
+  "commodities:SUGAR": {
+    "ticker": "SB=F",
+    "bars": 1257,
+    "dropped": 3
+  },
+  "commodities:COCOA": {
+    "ticker": "CC=F",
+    "bars": 1256,
+    "dropped": 4
+  },
+  "commodities:COTTON": {
+    "ticker": "CT=F",
+    "bars": 1257,
+    "dropped": 264
+  },
+  "commodities:ROUGHRICE": {
+    "ticker": "ZR=F",
+    "bars": 1255,
+    "dropped": 5
+  },
+  "commodities:MILK": {
+    "ticker": "DC=F",
+    "bars": 1254,
+    "dropped": 6
+  },
+  "commodities:PALMOIL": {
+    "ticker": "CPO=F",
+    "bars": 1255,
+    "dropped": 266
+  },
+  "currencies:USD": {
+    "ticker": "DX-Y.NYB",
+    "bars": 1257,
+    "dropped": 264
+  },
+  "currencies:EUR": {
+    "ticker": "EURUSD=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:JPY": {
+    "ticker": "JPY=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:GBP": {
+    "ticker": "GBPUSD=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:CHF": {
+    "ticker": "CHF=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:AUD": {
+    "ticker": "AUDUSD=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:CAD": {
+    "ticker": "CAD=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:INR": {
+    "ticker": "INR=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:KRW": {
+    "ticker": "KRW=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:SEK": {
+    "ticker": "SEK=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:MXN": {
+    "ticker": "MXN=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:NZD": {
+    "ticker": "NZDUSD=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:NOK": {
+    "ticker": "NOK=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:TWD": {
+    "ticker": "TWD=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:BRL": {
+    "ticker": "BRL=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:ZAR": {
+    "ticker": "ZAR=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:PLN": {
+    "ticker": "PLN=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:DKK": {
+    "ticker": "DKK=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:IDR": {
+    "ticker": "IDR=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:TRY": {
+    "ticker": "TRY=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:THB": {
+    "ticker": "THB=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:ILS": {
+    "ticker": "ILS=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:HUF": {
+    "ticker": "HUF=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:CZK": {
+    "ticker": "CZK=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:CLP": {
+    "ticker": "CLP=X",
+    "bars": 1299,
+    "dropped": 6
+  },
+  "currencies:PHP": {
+    "ticker": "PHP=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "currencies:COP": {
+    "ticker": "COP=X",
+    "bars": 1300,
+    "dropped": 6
+  },
+  "indices:SPX": {
+    "ticker": "^GSPC",
+    "bars": 1254,
+    "dropped": 0
+  },
+  "indices:NDX": {
+    "ticker": "^NDX",
+    "bars": 1254,
+    "dropped": 0
+  },
+  "indices:RUT": {
+    "ticker": "^RUT",
+    "bars": 1254,
+    "dropped": 0
+  },
+  "indices:DJI": {
+    "ticker": "^DJI",
+    "bars": 1254,
+    "dropped": 0
+  },
+  "indices:NIFTY50": {
+    "ticker": "^NSEI",
+    "bars": 1236,
+    "dropped": 4
+  },
+  "indices:FTSE100": {
+    "ticker": "^FTSE",
+    "bars": 1262,
+    "dropped": 0
+  },
+  "indices:DAX40": {
+    "ticker": "^GDAXI",
+    "bars": 1275,
+    "dropped": 0
+  },
+  "indices:CAC40": {
+    "ticker": "^FCHI",
+    "bars": 1281,
+    "dropped": 0
+  },
+  "indices:ESTX50": {
+    "ticker": "^STOXX50E",
+    "bars": 1257,
+    "dropped": 0
+  },
+  "indices:NIKKEI225": {
+    "ticker": "^N225",
+    "bars": 1223,
+    "dropped": 0
+  },
+  "indices:HSI": {
+    "ticker": "^HSI",
+    "bars": 1227,
+    "dropped": 0
+  },
+  "indices:SSEC": {
+    "ticker": "000001.SS",
+    "bars": 1211,
+    "dropped": 0
+  },
+  "indices:CSI300": {
+    "ticker": "000300.SS",
+    "bars": 1174,
+    "dropped": 37
+  },
+  "indices:ASX200": {
+    "ticker": "^AXJO",
+    "bars": 1265,
+    "dropped": 0
+  },
+  "indices:KOSPI": {
+    "ticker": "^KS11",
+    "bars": 1220,
+    "dropped": 0
+  },
+  "indices:TWII": {
+    "ticker": "^TWII",
+    "bars": 1214,
+    "dropped": 1
+  },
+  "indices:STI": {
+    "ticker": "^STI",
+    "bars": 1256,
+    "dropped": 4
+  },
+  "indices:BOVESPA": {
+    "ticker": "^BVSP",
+    "bars": 1248,
+    "dropped": 0
+  },
+  "indices:IPCMEX": {
+    "ticker": "^MXX",
+    "bars": 1258,
+    "dropped": 0
+  },
+  "indices:TSX": {
+    "ticker": "^GSPTSE",
+    "bars": 1255,
+    "dropped": 0
+  },
+  "indices:IBEX35": {
+    "ticker": "^IBEX",
+    "bars": 1279,
+    "dropped": 0
+  },
+  "indices:FTSEMIB": {
+    "ticker": "FTSEMIB.MI",
+    "bars": 1271,
+    "dropped": 0
+  },
+  "indices:AEX": {
+    "ticker": "^AEX",
+    "bars": 1281,
+    "dropped": 0
+  },
+  "crypto:BTC": {
+    "ticker": "BTC-USD",
+    "bars": 1826,
+    "dropped": 1
+  },
+  "crypto:ETH": {
+    "ticker": "ETH-USD",
+    "bars": 1826,
+    "dropped": 1
+  },
+  "crypto:USDT": {
+    "ticker": "USDT-USD",
+    "bars": 1826,
+    "dropped": 1
+  },
+  "crypto:BNB": {
+    "ticker": "BNB-USD",
+    "bars": 1826,
+    "dropped": 1
+  },
+  "crypto:XRP": {
+    "ticker": "XRP-USD",
+    "bars": 1826,
+    "dropped": 1
+  },
+  "crypto:SOL": {
+    "ticker": "SOL-USD",
+    "bars": 1826,
+    "dropped": 1
+  },
+  "crypto:TRX": {
+    "ticker": "TRX-USD",
+    "bars": 1826,
+    "dropped": 1
+  },
+  "crypto:HYPE": {
+    "ticker": "HYPE32196-USD",
+    "bars": 648,
+    "dropped": 2
+  },
+  "crypto:DOGE": {
+    "ticker": "DOGE-USD",
+    "bars": 1826,
+    "dropped": 1
+  },
+  "crypto:XMR": {
+    "ticker": "XMR-USD",
+    "bars": 1826,
+    "dropped": 1
+  },
+  "crypto:LINK": {
+    "ticker": "LINK-USD",
+    "bars": 1826,
+    "dropped": 1
+  },
+  "crypto:LEO": {
+    "ticker": "LEO-USD",
+    "bars": 1826,
+    "dropped": 1
+  },
+  "crypto:ADA": {
+    "ticker": "ADA-USD",
+    "bars": 1826,
+    "dropped": 1
+  },
+  "crypto:XLM": {
+    "ticker": "XLM-USD",
+    "bars": 1826,
+    "dropped": 1
+  },
+  "crypto:DAI": {
+    "ticker": "DAI-USD",
+    "bars": 1826,
+    "dropped": 1
+  },
+  "crypto:USDE": {
+    "ticker": "USDE-USD",
+    "bars": 530,
+    "dropped": 773
+  },
+  "crypto:CC": {
+    "ticker": "CC-USD",
+    "bars": 491,
+    "dropped": 1336
+  },
+  "crypto:LTC": {
+    "ticker": "LTC-USD",
+    "bars": 1826,
+    "dropped": 1
+  },
+  "crypto:TON": {
+    "ticker": "TONCOIN-USD",
+    "bars": 396,
+    "dropped": 1431
+  },
+  "crypto:HBAR": {
+    "ticker": "HBAR-USD",
+    "bars": 1826,
+    "dropped": 1
+  },
+  "crypto:AVAX": {
+    "ticker": "AVAX-USD",
+    "bars": 1826,
+    "dropped": 1
+  },
+  "crypto:SUI": {
+    "ticker": "SUI20947-USD",
+    "bars": 1225,
+    "dropped": 1
+  },
+  "crypto:SHIB": {
+    "ticker": "SHIB-USD",
+    "bars": 1826,
+    "dropped": 1
+  },
+  "crypto:NEAR": {
+    "ticker": "NEAR-USD",
+    "bars": 1826,
+    "dropped": 1
+  },
+  "crypto:MATIC": {
+    "ticker": "MATIC-USD",
+    "bars": 1293,
+    "dropped": 534
+  },
+  "crypto:UNI": {
+    "ticker": "UNI-USD",
+    "bars": 1317,
+    "dropped": 510
+  }
+}

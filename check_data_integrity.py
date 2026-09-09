@@ -100,6 +100,47 @@ if os.path.exists(FUNDAMENTALS):
     check("no stale (revised) ISINs in fundamentals", not revised,
           "; ".join(f"{a} -> {b}" for a, b in sorted(revised.items())))
 
+# ---- non-equity asset classes (§3.2) -------------------------------------
+# Each class has its OWN trading calendar, so these are checked per class and never
+# pooled: crypto trades every day, indices span markets whose holidays differ, and
+# pooling them would make every genuine gap look like a phantom date.
+print("\nnon-equity asset classes")
+for cls in ("commodities", "currencies", "indices", "crypto"):
+    mpath = os.path.join(BASE, f"meridian-{cls}-master.csv")
+    ppath = os.path.join(BASE, f"meridian-{cls}-prices.csv")
+    if not (os.path.exists(mpath) and os.path.exists(ppath)):
+        continue
+    m = pd.read_csv(mpath, dtype=str)
+    p = pd.read_csv(ppath)
+    n = p.Symbol.nunique()
+
+    check(f"{cls}: every master symbol has prices",
+          not (set(m.Symbol) - set(p.Symbol)),
+          f"missing {sorted(set(m.Symbol) - set(p.Symbol))}")
+    check(f"{cls}: no duplicate (Symbol, Date)", not p.duplicated(["Symbol", "Date"]).any())
+    check(f"{cls}: no non-positive closes", not (p.Close <= 0).any())
+    check(f"{cls}: every instrument clears the §3.1 200-bar rule",
+          p.groupby("Symbol").size().ge(200).all(),
+          f"{(p.groupby('Symbol').size() < 200).sum()} below")
+
+    # A bar's date is its exchange's LOCAL date. Reading Yahoo's timestamps as UTC put
+    # 125 ASX200 bars on Sundays and shifted every Asian index by a day, which showed
+    # up as a swarm of dates only one instrument reported on. A handful of such dates
+    # is legitimate — Tokyo and Shanghai do trade when New York is shut — but dozens
+    # means the timezone handling has regressed.
+    per_date = p.groupby("Date").Symbol.nunique()
+    thin = per_date[per_date < 0.25 * n]
+    check(f"{cls}: no swarm of single-instrument dates (timezone regression)",
+          len(thin) <= 20, f"{len(thin)} dates below 25% coverage")
+
+    # FX genuinely has no volume; everything else should mostly have it. Empty is
+    # written rather than zero, because zero is a real reading meaning "did not trade".
+    has_vol = p.Volume.notna().mean()
+    if cls == "currencies":
+        check(f"{cls}: volume absent, as expected for FX", has_vol == 0)
+    else:
+        check(f"{cls}: volume present on most bars", has_vol > 0.5, f"{has_vol:.0%} of rows")
+
 n200 = prices.groupby("ISIN").size().ge(200).sum()
 print(f"\n  {n_inst} instruments priced, {n200} clearing the §3.1 200-bar rule")
 

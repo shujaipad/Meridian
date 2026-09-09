@@ -124,9 +124,10 @@ separation and a rising 200DMA — but the freshest cross among them was **23 tr
 old**, outside the 15-day gate. The sheet says so in place of rendering blank. Expect it
 to populate in clusters after a broad market turn, not daily.
 
-**What is deliberately not in the workbook.** Commodities, Currencies, Crypto and Global
-Indices. Their universes are defined (§3.2), but the only price files in the repository
-are prototype samples — an identical 1,260 bars for every symbol, crypto ending 18 months
+**What is deliberately not in the workbook — resolved 2026-09-09 for the data, still to be
+wired into the workbook.** Commodities, Currencies, Crypto and Global Indices now have real
+5-year history (§3.2a). At the time this was written the only price files were prototype
+samples — an identical 1,260 bars for every symbol, crypto ending 18 months
 before the others, and no currency price file at all — and the Golden Breakout thresholds
 are unvalidated outside equities (§9). Sheets built on that data would carry the same
 authority as the equity sheets and be wrong. They are omitted until those universes are
@@ -326,6 +327,61 @@ prototype, not as a live deliverable.
   inconsistent Indian coverage requires. Used for the initial full backfill; the same
   script serves the quarterly re-pull. **Only the bulk shape** — the daily incremental
   job remains separate engineering (§7.3).
+
+### 3.2a Non-equity price history (backfilled 2026-09-09)
+
+All four non-equity classes now carry **real 5-year daily history**, replacing the synthetic
+samples: **137,025 rows across 102 instruments**, adjusted, zero fetch failures.
+
+| Class | Instruments | Rows | Trading days | Volume |
+|---|---|---|---|---|
+| Commodities | 26 | 32,666 | 1,258 | 82% of bars |
+| Currencies | 27 | 35,056 | 1,301 | none — see below |
+| Global Indices | 23 | 28,709 | 1,307 | 99% |
+| Crypto | 26 | 40,594 | 1,826 | 99% |
+
+Every instrument clears the §3.1 200-bar rule. Fetched by `fetch_asset_prices.py`, guarded
+by 24 new assertions in `check_data_integrity.py`, and verified by running the real engine
+over all four: MA200, RSI and RS Rating compute for every instrument, and the Golden Breakout
+screener returns candidates (CORN; LINK, ETH, SOL).
+
+**Four findings, none guessable from the master files:**
+
+- **A bar's date is its exchange's local date, not UTC.** Reading Yahoo's timestamps as UTC
+  put **125 ASX200 bars on Sundays** and shifted every Asian index by a day. Sydney at UTC+11
+  opens 10:00 local, which is 23:00 UTC the day before. A fixed `gmtoffset` is not sufficient
+  either — Yahoo reports only the *current* offset, while the Sunday bars clustered in
+  October–April, which is exactly Australian daylight saving. Each timestamp is now converted
+  through the exchange's named timezone. Distinct dates fell from 1,448 → 1,301 (currencies)
+  and 1,429 → 1,307 (indices); the 12 that remain are genuine Asian-only sessions.
+- **Currencies have no volume at all.** Written empty rather than zero, because zero is a real
+  reading meaning "did not trade" and would make `volBreakoutPct` compute a nonsense figure
+  instead of declining to. The screens show it blank for FX, which is correct.
+- **Calendars must never be pooled.** Crypto trades 1,826 days over five years, indices 1,307.
+  `clean_price_calendar.py`'s phantom-day rule (drop dates under 5% coverage) is meaningful
+  only *within* one calendar; applied across classes it would delete every crypto weekend.
+- **CRLF line endings silently zeroed every volume.** Python's `csv` module writes `\r\n` by
+  default while every other data file here is LF, so a `split("\n")` left the header's last
+  key as `"Volume\r"` and every volume read as undefined. It presented as `volBreakoutPct`
+  being null across all four classes — a plausible-looking result that was entirely an
+  encoding artefact.
+
+**Two universe corrections, both requiring a judgement rather than a fix:**
+
+- **TON** was `TON11419-USD`, which returns 2 valid bars. Two alternatives exist and they are
+  *different assets*: `TON-USD` is "TON Token" with 1,826 bars, `TONCOIN-USD` is "Toncoin"
+  with 396. The complete one is the wrong coin, so the correct one was taken despite the
+  sparser history — 396 bars still clears the 200-bar rule. Substituting on completeness
+  would have put a different asset in the universe under the label "Toncoin".
+- **CANOLA** (`RS=F`) returns zero bars; Yahoo reports it as an alias with no data. The only
+  ticker that resolves is `RS.TO`, which is *Real Estate Split Corp*. Removed from the
+  universe rather than carried as a permanent daily failure. Restore it if a working ticker
+  is found.
+
+**Still open (§9):** the Golden Breakout gates were backtested on Indian equities only. Their
+thresholds — 3% separation, 15-day freshness — are unvalidated for commodities, FX, indices
+and crypto, which have quite different volatility. Now that real history exists this is
+finally testable, and should be, before anyone acts on a non-equity signal.
 
 ### 3.5 Daily maintenance (prices) — **detect-and-isolate (locked 2026-09-07)**
 
@@ -1714,7 +1770,9 @@ be the authoritative list of what belongs in the GitHub repository.
 | Tooling | `verify_port.mjs` + `verify_port.py` | Port parity check: runs the Node engine and the Python backtest over the same history and fails on any divergence in the candidate set |
 | Tooling | `clean_price_calendar.py` | Strips phantom trading days (holiday bars from a few BSE tickers) that silently NaN out every rolling window. Must run after any bulk fetch — see §9 item 0a |
 | Input | `meridian-fundamentals-742.csv` | Real Equities fundamentals |
-| Input | `meridian-commodities-master.csv` | Real, verified universe (27 instruments) — `-prices-sample.csv` remains synthetic, real price history not yet sourced |
+| Input | `meridian-{commodities,currencies,indices,crypto}-prices.csv` | **Real 5-year daily history for all four non-equity classes** (2026-09-09): 137,025 rows, 102 instruments, adjusted, dated in each exchange's own timezone. Replaces the synthetic samples |
+| Tooling | `fetch_asset_prices.py` | The non-equity backfill. Sibling of `fetch_prices.py`, kept separate because these carry explicit Yahoo tickers and four different trading calendars |
+| Input | `meridian-commodities-master.csv` | Real, verified universe (26 instruments after CANOLA was removed — see below) |
 | Input | `meridian-currencies-master.csv` | Real, verified universe (27 instruments) — new asset class; no price file yet, synthetic or real |
 | Input | `meridian-indices-master.csv` | Real, verified universe (23 instruments) — `-prices-sample.csv` remains synthetic, real price history not yet sourced |
 | Input | `meridian-crypto-master.csv` | Real, verified universe (26 instruments) — `-prices-sample.csv` remains synthetic, real price history not yet sourced |
