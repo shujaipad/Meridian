@@ -37,7 +37,13 @@ concurrency:
 jobs:
   pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 60 was the whole job's budget, and the fetch alone consumed all of it on the
+    # first scheduled run: the sweep was still going at 60 minutes, the runner
+    # cancelled it, and compute/workbook never ran -- which is why the screens sat at
+    # the backfill date. The steps below carry their own budgets so a slow fetch can
+    # no longer starve the steps after it, and daily_fetch.mjs stops itself at 75
+    # minutes with a summary rather than being killed without one.
+    timeout-minutes: 150
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -61,6 +67,7 @@ jobs:
       # A failed instrument exits non-zero and does NOT advance its watermark, so
       # tomorrow's sweep retries it with no manual intervention.
       - name: Fetch prices
+        timeout-minutes: 80
         run: node --max-old-space-size=4096 daily_fetch.mjs ${{ inputs.dry_run && '--dry-run' || '' }}
 
       # --from-db, not the committed CSVs: those are frozen at the initial backfill,
@@ -68,10 +75,12 @@ jobs:
       # looking entirely healthy.
       - name: Compute and publish the screens
         if: ${{ !inputs.dry_run }}
+        timeout-minutes: 40
         run: node --max-old-space-size=6144 compute_and_publish.mjs --from-db
 
       - name: Build the workbook
         if: ${{ !inputs.dry_run }}
+        timeout-minutes: 25
         run: |
           node --max-old-space-size=6144 build_workbook.mjs
           pip install --quiet -r requirements.txt

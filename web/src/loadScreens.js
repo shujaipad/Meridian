@@ -127,21 +127,18 @@ export async function loadScreens() {
 
   // Shaped like an instrument so the same screen components render it — the
   // prototype does exactly this with its synthetic industry indices.
+  //
+  // Which is exactly why it goes through the same techOf as every other class: the
+  // Sectoral screen renders the identical signal grid, the identical six moving
+  // averages and the identical 52-week range as the Stocks screen, so a hand-written
+  // shape here is a second row mapper that can silently fall behind the first. It
+  // did: it hardcoded empty sSignals/mSignals, which rendered every pill inactive,
+  // and carried three of the six MAs. The industry rows now come out of the same
+  // function as the equity rows, and can only diverge if the columns do.
   const sectoralComputed = sectoral.map((s) => ({
     ISIN: s.industry_group, Name: s.industry_group, Symbol: s.industry_group,
     Sector: s.industry_group, Constituents: s.constituents, fund: null,
-    tech: {
-      cmp: n(s.cmp), changePct: n(s.change_pct), rsi: n(s.rsi),
-      mas: { 8: n(s.ma8), 50: n(s.ma50), 200: n(s.ma200) },
-      sSignals: {}, mSignals: {}, sStreaks: {}, mStreaks: {},
-      ma200SlopePct: n(s.ma200_slope_pct), ma200Rising: s.ma200_rising,
-      goldenCrossState: s.golden_cross_state,
-      goldenCrossStreak: { streak: s.golden_cross_streak, capped: false },
-      separationPct: n(s.separation_pct),
-      rsRating: s.rs_rating == null ? null : {
-        rating: n(s.rs_rating), band: s.rs_band, streakDays: s.rs_streak_days, capped: false,
-      },
-    },
+    tech: techOf(s),
   }));
 
   const breadthSeries = breadth

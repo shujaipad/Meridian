@@ -259,27 +259,52 @@ const closesById = closesByKeyFromPrices(prices, "ISIN");
 const rs = computeRSUniverse(closesById);
 const scores = computeFundamentalScores(computed);
 
-const technicals = computed.filter((s) => s.tech).map((s) => {
-  const t = s.tech, r = rs[s.ISIN] || null;
-  return {
-    universe_id: ids[s.ISIN], as_of_date: asOf,
-    cmp: r4(t.cmp), change_pct: r4(t.changePct),
-    high52: r4(t.high52), low52: r4(t.low52),
-    pct_from_high52: r4(t.pctFromHigh52), pct_from_low52: r4(t.pctFromLow52),
-    ma3: r4(t.mas?.[3]), ma8: r4(t.mas?.[8]), ma30: r4(t.mas?.[30]),
-    ma50: r4(t.mas?.[50]), ma100: r4(t.mas?.[100]), ma200: r4(t.mas?.[200]),
-    rsi: r2(t.rsi),
-    s_signals: t.sSignals ?? null, m_signals: t.mSignals ?? null,
-    s_streaks: t.sStreaks ?? null, m_streaks: t.mStreaks ?? null,
-    rs_rating: r?.rating ?? null, rs_band: r?.band ?? null,
-    rs_streak_days: r?.streakDays ?? null, rs_capped: r?.capped ?? null,
-    vol_breakout_pct: r2(t.volBreakoutPct),
-    ma200_slope_pct: r4(t.ma200SlopePct), ma200_rising: t.ma200Rising ?? null,
-    golden_cross_state: t.goldenCrossState ?? null,
-    golden_cross_streak: t.goldenCrossStreak?.streak ?? null,
-    separation_pct: r4(t.separationPct),
-  };
+// One technical row, for every screen that has one. Equities, the four non-equity
+// classes and the synthetic industry indices all come out of computeTechnicalBlock,
+// so they all store the same twenty-six values; only the identifying columns differ.
+//
+// This is a function rather than three literals because it was three literals, and
+// they drifted. The sectoral copy was written with thirteen of the twenty-six, so
+// the Sectoral screen -- which renders the same signal grid and the same six moving
+// averages as the Stocks screen -- showed every pill inactive and three MAs blank.
+// Nothing was miscalculated; the values were computed and then dropped on the way to
+// the database. §7.2 rejects duplicate implementations precisely because the drift is
+// silent, and a row builder is no more exempt from that than the model is.
+//
+// `t` may be null: computeTechnicalBlock returns null for an instrument with too
+// little history, and the sectoral path can hand one over.
+const technicalRow = (t, r) => ({
+  cmp: r4(t?.cmp), change_pct: r4(t?.changePct),
+  high52: r4(t?.high52), low52: r4(t?.low52),
+  pct_from_high52: r4(t?.pctFromHigh52), pct_from_low52: r4(t?.pctFromLow52),
+  ma3: r4(t?.mas?.[3]), ma8: r4(t?.mas?.[8]), ma30: r4(t?.mas?.[30]),
+  ma50: r4(t?.mas?.[50]), ma100: r4(t?.mas?.[100]), ma200: r4(t?.mas?.[200]),
+  rsi: r2(t?.rsi),
+  s_signals: t?.sSignals ?? null, m_signals: t?.mSignals ?? null,
+  s_streaks: t?.sStreaks ?? null, m_streaks: t?.mStreaks ?? null,
+  rs_rating: r?.rating ?? null, rs_band: r?.band ?? null,
+  rs_streak_days: r?.streakDays ?? null, rs_capped: r?.capped ?? null,
+  // Null for FX, which has no volume at all -- not zero, which would read as
+  // "traded nothing today" rather than "this instrument has no volume".
+  vol_breakout_pct: r2(t?.volBreakoutPct),
+  ma200_slope_pct: r4(t?.ma200SlopePct), ma200_rising: t?.ma200Rising ?? null,
+  golden_cross_state: t?.goldenCrossState ?? null,
+  golden_cross_streak: t?.goldenCrossStreak?.streak ?? null,
+  separation_pct: r4(t?.separationPct),
 });
+
+// The three Golden Breakout columns, likewise shared by the equity and non-equity
+// candidate lists.
+const candidateRow = (t) => ({
+  separation_pct: r4(t.separationPct),
+  freshness_days: t.goldenCrossStreak?.streak ?? null,
+  vol_breakout_pct: r2(t.volBreakoutPct),
+});
+
+const technicals = computed.filter((s) => s.tech).map((s) => ({
+  universe_id: ids[s.ISIN], as_of_date: asOf,
+  ...technicalRow(s.tech, rs[s.ISIN] || null),
+}));
 
 const scored = computed.filter((s) => scores[s.ISIN]?.score != null).map((s) => ({
   universe_id: ids[s.ISIN], as_of_date: asOf,
@@ -292,10 +317,7 @@ const scored = computed.filter((s) => scores[s.ISIN]?.score != null).map((s) => 
 }));
 
 const candidates = runGoldenBreakoutScreener(computed).map((c, i) => ({
-  universe_id: ids[c.ISIN], as_of_date: asOf, rank: i + 1,
-  separation_pct: r4(c.tech.separationPct),
-  freshness_days: c.tech.goldenCrossStreak?.streak ?? null,
-  vol_breakout_pct: r2(c.tech.volBreakoutPct),
+  universe_id: ids[c.ISIN], as_of_date: asOf, rank: i + 1, ...candidateRow(c.tech),
 }));
 
 console.log("computing sectoral...");
@@ -307,21 +329,11 @@ master.forEach((m) => {
 });
 const rsSector = computeRSUniverse(Object.fromEntries(
   sectorNames.map((n) => [n, seriesBySector[n].map((r) => r.Close)])));
-const sectoral = sectorNames.map((name) => {
-  const t = computeTechnicalBlock(seriesBySector[name]);
-  const r = rsSector[name] || null;
-  return {
-    industry_group: name, as_of_date: asOf,
-    constituents: constituents[name] ?? 0,
-    cmp: r4(t?.cmp), change_pct: r4(t?.changePct), rsi: r2(t?.rsi),
-    ma8: r4(t?.mas?.[8]), ma50: r4(t?.mas?.[50]), ma200: r4(t?.mas?.[200]),
-    ma200_slope_pct: r4(t?.ma200SlopePct), ma200_rising: t?.ma200Rising ?? null,
-    golden_cross_state: t?.goldenCrossState ?? null,
-    golden_cross_streak: t?.goldenCrossStreak?.streak ?? null,
-    separation_pct: r4(t?.separationPct),
-    rs_rating: r?.rating ?? null, rs_band: r?.band ?? null, rs_streak_days: r?.streakDays ?? null,
-  };
-});
+const sectoral = sectorNames.map((name) => ({
+  industry_group: name, as_of_date: asOf,
+  constituents: constituents[name] ?? 0,
+  ...technicalRow(computeTechnicalBlock(seriesBySector[name]), rsSector[name] || null),
+}));
 
 // -------------------------------------------------- non-equity asset classes
 // RS Rating is computed WITHIN each class, never across. It is a percentile rank
@@ -394,35 +406,13 @@ for (const c of ASSET_CLASSES) {
   // 2026-09-08 while crypto has 2026-09-09; one shared date would misreport both.
   const clsAsOf = rows.reduce((m, r) => (r.Date > m ? r.Date : m), "");
 
-  const clsTech = clsComputed.map((x) => {
-    const t = x.tech, r = clsRS[x.ISIN] || null;
-    return {
-      universe_id: ids[tickerOf[x.Symbol]], as_of_date: clsAsOf,
-      cmp: r4(t.cmp), change_pct: r4(t.changePct),
-      high52: r4(t.high52), low52: r4(t.low52),
-      pct_from_high52: r4(t.pctFromHigh52), pct_from_low52: r4(t.pctFromLow52),
-      ma3: r4(t.mas?.[3]), ma8: r4(t.mas?.[8]), ma30: r4(t.mas?.[30]),
-      ma50: r4(t.mas?.[50]), ma100: r4(t.mas?.[100]), ma200: r4(t.mas?.[200]),
-      rsi: r2(t.rsi),
-      s_signals: t.sSignals ?? null, m_signals: t.mSignals ?? null,
-      s_streaks: t.sStreaks ?? null, m_streaks: t.mStreaks ?? null,
-      rs_rating: r?.rating ?? null, rs_band: r?.band ?? null,
-      rs_streak_days: r?.streakDays ?? null, rs_capped: r?.capped ?? null,
-      // Null for FX, which has no volume at all — not zero, which would read as
-      // "traded nothing today" rather than "this instrument has no volume".
-      vol_breakout_pct: r2(t.volBreakoutPct),
-      ma200_slope_pct: r4(t.ma200SlopePct), ma200_rising: t.ma200Rising ?? null,
-      golden_cross_state: t.goldenCrossState ?? null,
-      golden_cross_streak: t.goldenCrossStreak?.streak ?? null,
-      separation_pct: r4(t.separationPct),
-    };
-  }).filter((r) => r.universe_id);
+  const clsTech = clsComputed.map((x) => ({
+    universe_id: ids[tickerOf[x.Symbol]], as_of_date: clsAsOf,
+    ...technicalRow(x.tech, clsRS[x.ISIN] || null),
+  })).filter((r) => r.universe_id);
 
   const clsCandidates = runGoldenBreakoutScreener(clsComputed).map((x, i) => ({
-    universe_id: ids[tickerOf[x.Symbol]], as_of_date: clsAsOf, rank: i + 1,
-    separation_pct: r4(x.tech.separationPct),
-    freshness_days: x.tech.goldenCrossStreak?.streak ?? null,
-    vol_breakout_pct: r2(x.tech.volBreakoutPct),
+    universe_id: ids[tickerOf[x.Symbol]], as_of_date: clsAsOf, rank: i + 1, ...candidateRow(x.tech),
   })).filter((r) => r.universe_id);
 
   technicals.push(...clsTech);
@@ -445,6 +435,26 @@ const breadth = (computeBreadthSeries(computed, closesById) || []).map((b) => ({
 
 console.log(`  technicals ${technicals.length} | scored ${scored.length} | candidates ${candidates.length} `
           + `| sectoral ${sectoral.length} | breadth ${breadth.length}`);
+
+// Parity check, because a shared builder guarantees the SHAPE and not the CONTENT.
+// The failure this catches is the one that reached production: a screen rendering
+// correctly over rows whose signal grid is empty. Every pill inactive is not a
+// visibly missing value -- it reads as an industry with no signals, which is a wrong
+// answer rather than an absent one, and nothing downstream would ever raise it.
+for (const [label, rows] of [["technicals", technicals], ["sectoral", sectoral]]) {
+  if (rows.length === 0) continue;
+  const blank = (f) => rows.filter((x) => x[f] == null || (typeof x[f] === "object" && Object.keys(x[f]).length === 0)).length;
+  // MA3 needs 3 bars, MA200 needs 200; a young instrument legitimately has neither,
+  // so this asserts that SOME row carries each field, not that every row does.
+  const empty = ["s_signals", "m_signals", "ma3", "ma30", "ma100", "high52", "low52"]
+    .filter((f) => blank(f) === rows.length);
+  if (empty.length > 0) {
+    console.error(`\n${label}: ${empty.join(", ")} is empty on all ${rows.length} rows.`);
+    console.error("The screens render these on every row. Publishing would leave them blank"
+                + " with no error anywhere. Refusing.");
+    process.exit(1);
+  }
+}
 
 // ---------------------------------------------------------------- publish
 console.log("publishing...");

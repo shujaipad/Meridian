@@ -43,7 +43,16 @@ const BASE = dirname(fileURLToPath(import.meta.url));
 const CHART = "https://query1.finance.yahoo.com/v8/finance/chart/";
 const UA = { "User-Agent": "Mozilla/5.0" };
 const BATCH = 500;
-const PAUSE_MS = 250;          // ~2,240 requests ≈ 9 minutes
+// 250ms between requests, plus ~110ms median response: 2,240 instruments measured
+// at 13.9 minutes end to end, 160/160 returning 200. The older "≈ 9 minutes" here
+// counted only the sleeping and not the requests.
+const PAUSE_MS = 250;
+const REQUEST_TIMEOUT_MS = 20_000;
+// Wall-clock budget for the sweep. Reaching it is a failure, but a reported one:
+// the job stops, says how far it got and what the remote was returning, and exits
+// non-zero with every watermark unmoved so tomorrow's run retries the remainder.
+// Being killed by the runner's own timeout instead leaves no summary at all.
+const SWEEP_BUDGET_MS = 75 * 60_000;
 const SWEEP_RANGE = "1mo";
 const DEEP_RANGE = "5y";
 // Relative, not absolute: a fixed epsilon means something quite different for a ₹12
@@ -65,13 +74,28 @@ const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persi
 const r4 = (v) => (v == null || Number.isNaN(v) ? null : Math.round(v * 1e4) / 1e4);
 
 // ---------------------------------------------------------------- fetch
+// Tally of what the remote actually returned, printed with every heartbeat. Without
+// it a run that is being throttled and a run that is merely slow produce the same
+// output -- which is to say, none.
+const httpTally = {};
+const tally = (k) => { httpTally[k] = (httpTally[k] || 0) + 1; };
+const tallyLine = () => Object.entries(httpTally).sort().map(([k, v]) => `${k}:${v}`).join(" ") || "none yet";
+
 async function chart(ticker, range, withEvents) {
   const url = `${CHART}${encodeURIComponent(ticker)}?range=${range}&interval=1d`
             + (withEvents ? "&events=div%2Csplits" : "");
   let lastErr;
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
-      const res = await fetch(url, { headers: UA });
+      // Node's fetch has NO default timeout. A connection the far end accepts and
+      // then never answers blocks this await forever, and because the loop below is
+      // sequential, one such socket stalls the entire run -- silently, since there
+      // is nothing to log while waiting. The first scheduled run stopped producing
+      // output after 83 seconds and was killed by the job timeout 59 minutes later
+      // with no error of its own, which is exactly that shape. 20s is generous
+      // against a median response of ~100ms.
+      const res = await fetch(url, { headers: UA, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+      tally(res.status);
       if (res.status === 429) throw new Error("429 rate limited");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
@@ -80,7 +104,15 @@ async function chart(ticker, range, withEvents) {
       return result;
     } catch (e) {
       lastErr = e;
-      if (attempt < 3) await sleep(2 ** attempt * 1000 + Math.random() * 500);
+      if (e?.name === "TimeoutError" || e?.name === "AbortError") tally("timeout");
+      else if (!/^(429|HTTP )/.test(String(e?.message))) tally(String(e?.message).slice(0, 24));
+      if (attempt < 3) {
+        const wait = 2 ** attempt * 1000 + Math.random() * 500;
+        // Logged, not swallowed. Silent retries are why an hour of backoff looked
+        // identical to an hour of nothing happening.
+        console.log(`    retry ${ticker} (${String(e?.message).slice(0, 60)}) in ${(wait / 1000).toFixed(1)}s`);
+        await sleep(wait);
+      }
     }
   }
   throw lastErr;
@@ -185,6 +217,7 @@ console.log(`stored overlap window: ${stored.length.toLocaleString()} rows since
 const flagged = [];
 const failures = [];
 let appended = 0, unchanged = 0;
+const sweepStart = Date.now();
 
 for (const [i, u] of targets.entries()) {
   let result;
@@ -228,11 +261,29 @@ for (const [i, u] of targets.entries()) {
     else unchanged++;
   }
 
-  if ((i + 1) % 250 === 0) process.stdout.write(`\r  swept ${i + 1}/${targets.length}`);
+  // A newline-terminated heartbeat, not a \r progress bar. Actions captures stdout
+  // through a pipe rather than a TTY, so carriage-return updates do not redraw --
+  // they accumulate unflushed, and a run killed before the next real newline leaves
+  // no trace of how far it got. This prints roughly every 30 seconds of work and
+  // carries the four numbers needed to tell "slow" from "stuck" from "throttled".
+  if ((i + 1) % 100 === 0 || i + 1 === targets.length) {
+    const mins = (Date.now() - sweepStart) / 60_000;
+    const eta = mins / (i + 1) * (targets.length - i - 1);
+    console.log(`  swept ${i + 1}/${targets.length} — ${appended} new bars, ${flagged.length} flagged, `
+              + `${failures.length} failed — ${mins.toFixed(1)} min elapsed, ~${eta.toFixed(0)} min left `
+              + `— http ${tallyLine()}`);
+  }
+  if (Date.now() - sweepStart > SWEEP_BUDGET_MS) {
+    console.error(`\nsweep budget of ${SWEEP_BUDGET_MS / 60_000} min exhausted at ${i + 1}/${targets.length}.`);
+    console.error(`http status counts: ${tallyLine()}`);
+    console.error("Nothing downstream runs and no watermark moved, so tomorrow's sweep retries the rest.");
+    process.exit(1);
+  }
   await sleep(PAUSE_MS);
 }
-console.log(`\nsweep done: ${appended.toLocaleString()} new bars, ${unchanged} unchanged, `
-          + `${flagged.length} flagged, ${failures.length} failed`);
+console.log(`\nsweep done in ${((Date.now() - sweepStart) / 60_000).toFixed(1)} min: `
+          + `${appended.toLocaleString()} new bars, ${unchanged} unchanged, `
+          + `${flagged.length} flagged, ${failures.length} failed — http ${tallyLine()}`);
 
 for (const f of flagged) console.log(`  flagged ${f.symbol}: ${f.reason}`);
 

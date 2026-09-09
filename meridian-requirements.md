@@ -511,7 +511,31 @@ NSE regular session is **03:45–10:00 UTC (09:15–15:30 IST)**, read from the 
   The workbook publishes by ~21:00 IST, hours before the next open.
 - **Retries at 16:30 and 18:30 UTC** (22:00 and 00:00 IST). The 1-month window makes a
   retry naturally idempotent — it overwrites rather than appends.
-- Total daily load ~2,145 requests at ~0.25s spacing, roughly **9 minutes**.
+- Total daily load ~2,240 requests at ~0.25s spacing. Measured end to end at
+  **13.9 minutes**, 160/160 sampled requests returning 200 with a 110ms median. The
+  earlier "9 minutes" counted the spacing and forgot the requests.
+
+**First scheduled run (2026-09-09) — cancelled, and why it told us nothing.** It
+printed the overlap window at 83 seconds and then produced no output for 59 minutes,
+at which point the runner's `timeout-minutes: 60` killed it; compute and workbook
+were skipped, which is why the screens stayed at the backfill date. Three defects,
+all fixed:
+- **`fetch()` had no timeout.** Node's fetch waits forever by default. The sweep is
+  sequential, so one connection accepted and never answered stalls the whole run with
+  nothing to log. Every request now carries `AbortSignal.timeout(20s)`.
+- **Retries were silent.** `chart()` backed off up to four times per instrument
+  logging nothing, so throttling and hanging produced identical output — none.
+  Retries are logged, and a running tally of HTTP status counts prints with every
+  heartbeat, so "slow", "stuck" and "rate-limited" are now distinguishable.
+- **Progress used `\r`.** Actions captures stdout through a pipe, not a TTY, so
+  carriage-return updates never redraw and a killed run leaves no trace of how far it
+  got. The heartbeat is newline-terminated, every 100 instruments, and carries
+  elapsed time, ETA and the status tally.
+
+The job stops itself at a 75-minute sweep budget with a summary and a non-zero exit
+rather than waiting to be killed without one; no watermark moves, so the next run
+retries the remainder. Step budgets (80/40/25 min) mean a slow fetch can no longer
+starve the steps after it.
 - *Known tradeoff:* 14:30 UTC falls inside US market hours, when Yahoo is busiest. If the
   logs show throttling, the lever is moving the sweep to ~20:30 UTC (02:00 IST, after the
   US close) — still hours before the Indian open. Start at 20:00 IST; move only on
@@ -965,7 +989,18 @@ history on every run, not something needing their own persisted history:
   not per-stock) — it stays small regardless, so the snapshot-vs-history distinction
   above doesn't apply to it.
 - `sectoral_technicals_daily` — same shape as `technicals_daily`, keyed by
-  IndustryGroup
+  IndustryGroup. "Same shape" is load-bearing and was violated for a full release:
+  the table and the publisher carried thirteen of the twenty-six columns, so the
+  Sectoral screen — which renders the identical signal grid and the identical six
+  moving averages as the Stocks screen — showed every pill inactive, three of six
+  MAs blank, and no 52-week range. Nothing was miscomputed; `computeTechnicalBlock`
+  produces the whole block for a synthetic industry index exactly as for a stock,
+  and the publisher discarded two thirds of it. Migration 003 adds the columns;
+  `compute_and_publish.mjs` now builds equity, non-equity and sectoral rows from one
+  `technicalRow()` function, and `loadScreens.js` maps them all through one `techOf`.
+  **Three hand-written copies of one row builder is what allowed the drift, and the
+  drift was silent** — §7.2's objection to duplicate implementations applies to a
+  row mapper exactly as it does to the model.
 
 **Operational tables:**
 - `fetch_job_log` — success/failure per run, per asset class; feeds the email

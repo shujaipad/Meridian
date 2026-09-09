@@ -108,6 +108,39 @@ await page.screenshot({ path: "shots/prod-02-golden-breakout.png" });
 await page.getByRole("button", { name: "Sectoral", exact: true }).first().click();
 await page.waitForTimeout(1200);
 check("sectoral renders industries", /Refineries|Capital Markets|Pharmaceuticals/.test(await body()), true);
+
+// The Sectoral screen renders the same signal grid as the Stocks screen, and for a
+// full release it rendered every pill inactive: the pipeline stored thirteen of the
+// twenty-six technical columns, so sSignals and mSignals arrived empty. Nothing was
+// blank on screen -- the pills were all there, all grey -- which reads as "these
+// industries have no signals", not as missing data. Asserting an industry NAME is
+// present, as the check above does alone, cannot see that. Count the colours.
+const pills = await page.evaluate(() => {
+  const out = { green: 0, red: 0, neutral: 0 };
+  for (const el of document.querySelectorAll("td span")) {
+    if (!/^[SM]\d/.test(el.textContent.trim())) continue;
+    const bg = getComputedStyle(el).backgroundColor;
+    if (bg === "rgba(76, 175, 125, 0.15)") out.green++;
+    else if (bg === "rgba(212, 106, 106, 0.12)") out.red++;
+    else out.neutral++;
+  }
+  return out;
+});
+check("sectoral signal pills are coloured, not all inactive", pills.green + pills.red > 100, true);
+check("sectoral has both bullish and bearish pills", pills.green > 0 && pills.red > 0, true);
+
+// Expand one industry and read the moving averages out of its detail row. MA8, MA50
+// and MA200 were stored all along; MA3, MA30 and MA100 were not, and printed as an
+// em dash next to three real numbers -- which looks like a calculation that failed
+// rather than a column that was never saved.
+await page.locator("tbody tr").first().click();
+await page.waitForTimeout(600);
+const detail = await page.locator("tbody").innerText();
+const mas = [3, 8, 30, 50, 100, 200].filter((n) => new RegExp(`MA${n}: [0-9]`).test(detail));
+check("sectoral prints all six moving averages", mas.join(","), "3,8,30,50,100,200");
+check("sectoral prints a 52-week range", /52w range: [0-9][0-9.]* – [0-9]/.test(detail), true);
+await page.locator("tbody tr").first().click();
+
 await page.screenshot({ path: "shots/prod-03-sectoral.png" });
 
 // --- Sectoral Breakout ------------------------------------------------------

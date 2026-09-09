@@ -47,6 +47,13 @@ export function computeSectoralSeries(masterList, prices) {
   });
 
   const result = {}; // { sectorName: [{ISIN, Date, Close, Volume}, ...] }
+  // Volume is null, not a number. An equal-weighted index of returns has no traded
+  // volume of its own, and the placeholder that used to sit here -- a constant
+  // 1,000,000 on every bar -- made volBreakoutPct come out as exactly 100% for every
+  // industry on every day. The screens print that in the "Vol Breakout %" column,
+  // where a constant reads as a measurement. Null renders as an em dash instead,
+  // which is what it is. computeTechnicalBlock already handles a volume-less
+  // instrument, because FX has none either.
   Object.entries(bySector).forEach(([sector, stockDateMaps]) => {
     if (stockDateMaps.length < 3) return; // too thin a sample to form a meaningful synthetic index
     let level = 100;
@@ -63,7 +70,7 @@ export function computeSectoralSeries(masterList, prices) {
       });
       if (rets.length) {
         level = level * avg(rets);
-        synthetic.push({ ISIN: sector, Date: date, Close: level, Volume: 1000000 });
+        synthetic.push({ ISIN: sector, Date: date, Close: level, Volume: null });
       }
     });
     result[sector] = synthetic;
