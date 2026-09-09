@@ -1179,8 +1179,33 @@ matching**:
 below: the same load to Sydney would have paid ~150 ms of latency on each of ~2,150
 batched requests.
 
-Still to come: DigitalOcean (the nightly job has nowhere to run yet), PostHog, Resend, the
-domain, and the production frontend.
+**Vercel is live (2026-09-09).** The production frontend deploys from `web/`, reads the
+published screens from Supabase Mumbai, and is invite-only: accounts are created by the
+owner in the Supabase dashboard and `shouldCreateUser: false` means an address that was
+never invited receives no email at all.
+
+Two deployment failures worth recording, because neither error message points at its cause:
+
+1. **`vite: command not found`, exit 127, in 26 seconds.** The Root Directory was not set to
+   `web`, so Vercel built from the repository root — which has no `package.json`, so it
+   skipped install entirely and then ran its Vite preset's default build command. The tell
+   was in the error itself: Vercel reported running `vite build`, not the `npm run build`
+   that `web/vercel.json` specifies, which proved it had never read that file. Fix: set
+   Root Directory to `web`, and tick *Include files outside of the Root Directory* — `web/`
+   imports `meridian.jsx` from one level up by design.
+2. **`JWT issued at future` on every query.** A clock-skew rejection: the token's issued-at
+   timestamp was ahead of the clock on the service validating it, which a freshly
+   provisioned project can produce for a few minutes. Signing out and back in cleared it.
+   Worth knowing it is a *good* symptom in one respect — reaching a JWT validity check means
+   the deployment, the environment variables, the Supabase client and the redirect
+   allow-list are all already working.
+
+Also required, and not obvious: Supabase → Authentication → **URL Configuration** must list
+the Vercel URL as Site URL and in Redirect URLs. Left at its default the magic link
+redirects to `http://localhost:3000` and fails on any machine with nothing running there.
+
+Still to come: DigitalOcean (the nightly job has nowhere to run yet), PostHog, Resend, and
+the domain.
 
 #### Region (locked 2026-09-07)
 
