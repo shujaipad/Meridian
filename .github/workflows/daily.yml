@@ -1,0 +1,83 @@
+name: daily pipeline
+
+# The nightly job (§3.5, §6.3), running on GitHub Actions rather than a VPS.
+#
+# §7.3 originally rejected this, on the grounds that committing a 127MB dataset
+# nightly would bloat the repository. That premise is gone: prices live in Supabase
+# now, so this workflow commits nothing at all. The other objection — that cron
+# timing is unreliable under load — was overweighted: the job runs at 20:00 IST and
+# only has to finish before the 09:15 open, so a thirty-minute delay is irrelevant.
+# The repository is public, so Actions minutes are free.
+#
+# The remaining risk was that Yahoo throttles datacentre IPs harder than residential
+# ones. Measured before committing to this: 60 requests at the job's own pacing from
+# a datacentre IP returned zero 429s, median latency 82ms. GitHub's ranges are shared
+# more widely than that test's, so if throttling does appear it will show as 429s in
+# the log — at which point a VPS becomes the answer after all.
+#
+# Chain: fetch → compute → publish workbook. Each step only runs if the last
+# succeeded, so a failed fetch never publishes screens computed from partial data.
+on:
+  schedule:
+    # 14:30 UTC = 20:00 IST, 4.5 hours after the 15:30 IST close (§3.5).
+    - cron: "30 14 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Fetch and report without writing"
+        type: boolean
+        default: false
+
+concurrency:
+  # Two overlapping runs would both re-pull the same flagged instruments and race on
+  # the snapshot tables. Never cancel a run in progress — it may be mid-write.
+  group: daily-pipeline
+  cancel-in-progress: false
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Fail early if the secrets are missing
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "::error::SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set as repository secrets."
+            echo "Settings → Secrets and variables → Actions → New repository secret."
+            exit 1
+          fi
+
+      - run: npm install --no-save @supabase/supabase-js
+
+      # Sweep every instrument at 1mo, deep re-pull only what actually moved.
+      # A failed instrument exits non-zero and does NOT advance its watermark, so
+      # tomorrow's sweep retries it with no manual intervention.
+      - name: Fetch prices
+        run: node --max-old-space-size=4096 daily_fetch.mjs ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      # --from-db, not the committed CSVs: those are frozen at the initial backfill,
+      # and computing from them would republish the same screens every night while
+      # looking entirely healthy.
+      - name: Compute and publish the screens
+        if: ${{ !inputs.dry_run }}
+        run: node --max-old-space-size=6144 compute_and_publish.mjs --from-db
+
+      - name: Build the workbook
+        if: ${{ !inputs.dry_run }}
+        run: |
+          node --max-old-space-size=6144 build_workbook.mjs
+          pip install --quiet -r requirements.txt
+          python3 build_workbook.py
+          python3 verify_workbook.py
+
+      - name: Publish the workbook
+        if: ${{ !inputs.dry_run }}
+        run: node publish_workbook.mjs

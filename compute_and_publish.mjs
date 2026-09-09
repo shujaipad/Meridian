@@ -14,10 +14,19 @@
  *   export SUPABASE_SERVICE_ROLE_KEY="<service_role key>"
  *   node --max-old-space-size=6144 compute_and_publish.mjs
  *
- * Reads the committed CSVs rather than reading 2.1M rows back out of Supabase --
- * they are byte-identical to what was loaded (verify_load.sql agrees on all 12
- * counts) and it is far faster. The VPS version reads from prices_daily instead,
- * because by then the CSVs will be stale and the database will be the truth.
+ * TWO INPUT MODES. By default it reads the committed CSVs, which is right for a
+ * manual run: they are byte-identical to what was loaded and it is far faster.
+ * `--from-db` reads prices_daily instead, which is what the DAILY job must use --
+ * once daily_fetch.mjs starts appending bars, the CSVs are stale and the database is
+ * the truth. Running the scheduled job against the CSVs would recompute yesterday's
+ * screens forever while appearing to work perfectly.
+ *
+ * `--from-db` reads only the trailing window, not all 2.28M rows. Every live signal
+ * has a bounded lookback: 200 bars for the 200DMA, 252 for RS Rating and the 52-week
+ * range, 500 for the breadth series. 800 calendar days covers ~550 trading days,
+ * comfortably past the longest of those, and cuts the read from ~2,280 paged requests
+ * to ~1,200. The backtest needs the full five years, but the backtest does not run
+ * here.
  *
  * SNAPSHOT SEMANTICS. Four of these five tables hold one row per instrument for
  * ONE date, not history (§6.4) -- so a re-run must replace, not accumulate. Each
@@ -47,6 +56,10 @@ const BATCH = 500;
 // That is what proves the rows FIT -- a numeric overflow or a jsonb the column
 // rejects is otherwise found only partway through writing to a live project.
 const DRY = process.argv.includes("--dry-run");
+const FROM_DB = process.argv.includes("--from-db");
+// See the header: 800 calendar days ≈ 550 trading days, past the 500-bar breadth
+// window which is the longest lookback any live signal uses.
+const DB_WINDOW_DAYS = 800;
 const DRY_DIR = join(BASE, "dryrun-screens");
 
 const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env;
@@ -133,14 +146,15 @@ const fundamentals = readCSV(join(BASE, "meridian-fundamentals-742.csv")).map((f
   FixedAssets: num(f.FixedAssets), CWIP: num(f.CWIP),
 }));
 const prices = [];
-for (const f of readdirSync(BASE).filter((f) => /^meridian-price-history-2090-part\d+of3\.csv$/.test(f)).sort()) {
-  for (const r of readCSV(join(BASE, f))) {
-    prices.push({ ISIN: r.ISIN, Date: r.Date, High: num(r.High), Low: num(r.Low),
-                  Close: num(r.Close), Volume: num(r.Volume) });
+if (!FROM_DB) {
+  for (const f of readdirSync(BASE).filter((f) => /^meridian-price-history-2090-part\d+of3\.csv$/.test(f)).sort()) {
+    for (const r of readCSV(join(BASE, f))) {
+      prices.push({ ISIN: r.ISIN, Date: r.Date, High: num(r.High), Low: num(r.Low),
+                    Close: num(r.Close), Volume: num(r.Volume) });
+    }
   }
 }
-const asOf = prices.reduce((m, r) => (r.Date > m ? r.Date : m), "");
-console.log(`  ${master.length} instruments, ${prices.length.toLocaleString()} price rows, as of ${asOf}`);
+console.log(`  ${master.length} instruments in the master`);
 
 // The universe_id map is the join key for four of the five tables. Paged, because
 // PostgREST caps a response at 1,000 rows and would otherwise silently return only
@@ -166,13 +180,48 @@ for (let from = 0; ; from += 1000) {
   if (data.length < 1000) break;
 }
 console.log(`  universe id map: ${Object.keys(ids).length} instruments`);
+
+// --from-db: pull the trailing window for EQUITIES here. The non-equity classes read
+// their own slice further down, because each has a separate calendar and its own
+// as-of date, and pooling them into one array would lose that distinction.
+if (FROM_DB) {
+  const cutoff = new Date(Date.now() - DB_WINDOW_DAYS * 86400_000).toISOString().slice(0, 10);
+  const isinById = {};
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await db.from("universe")
+      .select("id,identifier").eq("asset_class", "equity").range(from, from + 999);
+    if (error) { console.error(`reading equity universe: ${error.message}`); process.exit(1); }
+    data.forEach((r) => { isinById[r.id] = r.identifier; });
+    if (data.length < 1000) break;
+  }
+  console.log(`  reading prices_daily since ${cutoff} ...`);
+  let n = 0;
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await db.from("prices_daily")
+      .select("universe_id,trade_date,high,low,close,volume")
+      .gte("trade_date", cutoff).order("universe_id").order("trade_date")
+      .range(from, from + 999);
+    if (error) { console.error(`reading prices_daily: ${error.message}`); process.exit(1); }
+    for (const r of data) {
+      const isin = isinById[r.universe_id];
+      if (!isin) continue;                       // a non-equity row; handled per class below
+      prices.push({ ISIN: isin, Date: r.trade_date, High: num(r.high), Low: num(r.low),
+                    Close: num(r.close), Volume: num(r.volume) });
+    }
+    n += data.length;
+    if (n % 100000 === 0) process.stdout.write(`\r    ${n.toLocaleString()} rows`);
+    if (data.length < 1000) break;
+  }
+  console.log(`\n  ${prices.length.toLocaleString()} equity price rows from the database`);
+}
 if (!DRY && Object.keys(ids).length !== master.length) {
   console.error(`  universe in Supabase (${Object.keys(ids).length}) != master (${master.length}) — run load_supabase.mjs first`);
   process.exit(1);
 }
 
 // ---------------------------------------------------------------- compute
-console.log("computing (the same engine the app used to run in-browser)...");
+const asOf = prices.reduce((m, r) => (r.Date > m ? r.Date : m), "");
+console.log(`computing ${prices.length.toLocaleString()} equity price rows, as of ${asOf} ...`);
 const computed = computeAll(master, fundamentals, prices);
 const closesById = closesByKeyFromPrices(prices, "ISIN");
 const rs = computeRSUniverse(closesById);
@@ -261,14 +310,45 @@ const ASSET_CLASSES = [
 
 for (const c of ASSET_CLASSES) {
   const pricePath = join(BASE, `meridian-${c.dir}-prices.csv`);
-  if (!existsSync(pricePath)) { console.log(`${c.dir}: no prices, skipping`); continue; }
+  if (!FROM_DB && !existsSync(pricePath)) { console.log(`${c.dir}: no prices file, skipping`); continue; }
   const tickerOf = Object.fromEntries(
     readCSV(join(BASE, `meridian-${c.dir}-master.csv`)).map((m) => [m.Symbol, m.YahooTicker]));
 
-  const rows = readCSV(pricePath).map((r) => ({
-    ISIN: r.Symbol, Date: r.Date,
-    High: num(r.High), Low: num(r.Low), Close: num(r.Close), Volume: num(r.Volume),
-  }));
+  let rows;
+  if (FROM_DB) {
+    // Same trailing-window read as equities, scoped to this class's universe_ids.
+    // Read per class rather than once for everything, because each class has its own
+    // calendar and its own as-of date — pooling them would silently give crypto the
+    // indices' date, or vice versa.
+    const cutoff = new Date(Date.now() - DB_WINDOW_DAYS * 86400_000).toISOString().slice(0, 10);
+    const symById = {};
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await db.from("universe")
+        .select("id,symbol").eq("asset_class", c.assetClass).range(from, from + 999);
+      if (error) { console.error(`reading ${c.dir} universe: ${error.message}`); process.exit(1); }
+      data.forEach((r) => { symById[r.id] = r.symbol; });
+      if (data.length < 1000) break;
+    }
+    const memberIds = new Set(Object.keys(symById).map(Number));
+    rows = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await db.from("prices_daily")
+        .select("universe_id,trade_date,high,low,close,volume")
+        .in("universe_id", [...memberIds]).gte("trade_date", cutoff)
+        .order("universe_id").order("trade_date").range(from, from + 999);
+      if (error) { console.error(`reading ${c.dir} prices: ${error.message}`); process.exit(1); }
+      for (const r of data) {
+        rows.push({ ISIN: symById[r.universe_id], Date: r.trade_date,
+                    High: num(r.high), Low: num(r.low), Close: num(r.close), Volume: num(r.volume) });
+      }
+      if (data.length < 1000) break;
+    }
+  } else {
+    rows = readCSV(pricePath).map((r) => ({
+      ISIN: r.Symbol, Date: r.Date,
+      High: num(r.High), Low: num(r.Low), Close: num(r.Close), Volume: num(r.Volume),
+    }));
+  }
   const bySym = {};
   rows.forEach((r) => { (bySym[r.ISIN] ||= []).push(r); });
   const clsRS = computeRSUniverse(closesByKeyFromPrices(rows, "ISIN"));

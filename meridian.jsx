@@ -420,7 +420,42 @@ function GenericGoldenBreakoutScreen({ config, onAsOf, dataset = null }) {
     () => (dataset ? dataset.candidates : runGoldenBreakoutScreener(computed)),
     [dataset, computed]);
 
-  return <GoldenBreakoutScreen candidates={candidates} accent={config.accent} hasFundamentals={false} itemLabel={config.labelSingular.charAt(0).toUpperCase() + config.labelSingular.slice(1)} />;
+  return (
+    <>
+      <GateValidationNotice assetKey={config.key} accent={config.accent} />
+      <GoldenBreakoutScreen candidates={candidates} accent={config.accent} hasFundamentals={false} itemLabel={config.labelSingular.charAt(0).toUpperCase() + config.labelSingular.slice(1)} />
+    </>
+  );
+}
+
+// The five gates were backtested on Indian equities and nothing else. Measured
+// against real 5-year history for the other four classes (validate_gates_nonequity.mjs,
+// §4.3a), they do not transfer — and on commodities they are actively worse than a
+// random entry. Showing those candidates in the same styling as a validated equity
+// signal, with no qualification, would be the screen quietly overstating what it knows.
+const GATE_VALIDATION = {
+  commodities: { level: "bad", text: "Backtested on 5 years of real data: these gates performed WORSE than a random entry on commodities — 32% of signals profitable against a 48% baseline, median 60-day return −7.1% against 0.0%. 93 episodes across 17 instruments. Treat this screen as unvalidated and do not act on it." },
+  currencies:  { level: "none", text: "These gates never fire on FX. Across 5 years and 27 pairs there were zero qualifying episodes — currency pairs rarely put 3% between their 50 and 200 day averages. The screen is expected to stay empty." },
+  indices:     { level: "weak", text: "Only 20 qualifying episodes across 5 years, and the evidence conflicts: a lower hit rate than baseline (65% vs 69%) but a better median return (+8.6% vs +3.3%). Too small a sample to conclude either way." },
+  crypto:      { level: "weak", text: "No measurable edge over 5 years: 49% of signals profitable against a 47% baseline, median 60-day return −0.7% against −0.0%. 256 episodes. The gates fire often here but do not appear to select better entries." },
+};
+
+function GateValidationNotice({ assetKey, accent }) {
+  const v = GATE_VALIDATION[assetKey];
+  if (!v) return null;
+  const color = v.level === "bad" ? T.loss : T.textDim;
+  return (
+    <div style={{
+      margin: "14px 24px 0", padding: "10px 14px", borderRadius: 6,
+      background: v.level === "bad" ? `${T.loss}14` : T.surfaceAlt,
+      border: `1px solid ${v.level === "bad" ? T.loss : T.border}`,
+      fontSize: 11.5, lineHeight: 1.6, color: T.textDim,
+    }}>
+      <b style={{ color }}>
+        {v.level === "bad" ? "Not validated — evidence against" : "Not validated for this asset class"}
+      </b>{" — "}{v.text}
+    </div>
+  );
 }
 
 function GenericAssetScreen({ config, onAsOf, dataset = null }) {

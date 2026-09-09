@@ -378,10 +378,51 @@ screener returns candidates (CORN; LINK, ETH, SOL).
   universe rather than carried as a permanent daily failure. Restore it if a working ticker
   is found.
 
-**Still open (§9):** the Golden Breakout gates were backtested on Indian equities only. Their
-thresholds — 3% separation, 15-day freshness — are unvalidated for commodities, FX, indices
-and crypto, which have quite different volatility. Now that real history exists this is
-finally testable, and should be, before anyone acts on a non-equity signal.
+### 4.3a Do the Golden Breakout gates work outside equities? Measured 2026-09-09 — mostly no
+
+§9 flagged from the start that the five gates were backtested on Indian equities and nothing
+else. With real history now in place this was measured rather than assumed
+(`validate_gates_nonequity.mjs`): a walk-forward test over every eligible day, comparing the
+60-day forward return of signal days against **that class's own** baseline — the same
+instruments, same period, same horizon, differing only in whether the gates fired.
+
+| Class | Episodes | Instruments | Hit % | Baseline | Edge | Median return | Baseline | Edge |
+|---|---|---|---|---|---|---|---|---|
+| Commodities | 93 | 17 | 32.3% | 48.1% | **−15.8pp** | −7.10% | 0.00% | **−7.10pp** |
+| Currencies | **0** | 0 | — | 52.8% | — | — | +0.26% | — |
+| Global Indices | 20 | 8 | 65.0% | 69.3% | −4.3pp | +8.63% | +3.34% | +5.29pp |
+| Crypto | 256 | 20 | 49.2% | 46.9% | +2.3pp | −0.66% | −0.03% | −0.63pp |
+
+Equity reference (§4.3): **59.6%** hit rate.
+
+**Read in medians, not means.** The first run reported crypto's baseline 60-day return as
+**+55%**, which would compound to something absurd over five years and was really one or two
+coins that went up a hundredfold. The median says what a typical window actually did, and it
+reverses the reading: crypto's apparent −43pp deficit against buy-and-hold is outlier skew,
+while its real position is no edge at all.
+
+**Conclusions, per class:**
+
+- **Commodities — the gates are actively counterproductive.** 15.8 points *worse* than a
+  random entry on a 93-episode sample. This is not "unvalidated", it is evidence against.
+- **Currencies — the gates cannot fire.** Zero episodes in five years across 27 pairs: FX
+  rarely puts 3% between its 50 and 200 day averages. The screen will stay empty, and that is
+  the model's shape, not a data problem.
+- **Global Indices — inconclusive.** 20 episodes, and the two measures disagree (worse hit
+  rate, better median return). Nothing can be concluded from that.
+- **Crypto — no measurable edge.** The gates fire often (256 episodes) but do not select
+  better entries than chance.
+
+**Acted on, not just recorded:** each non-equity Golden Breakout screen now carries a notice
+stating its own measured result, with the commodities one styled as a warning. Presenting an
+unvalidated — or, for commodities, disproven — signal in the same styling as the validated
+equity model would be the interface quietly overstating what it knows.
+
+**What this does not say:** that the *idea* fails outside equities. It says these thresholds,
+tuned on Indian equities, do not transfer. Re-tuning separation and freshness per asset class
+is a real and separate piece of work.
+
+
 
 ### 3.5 Daily maintenance (prices) — **detect-and-isolate (locked 2026-09-07)**
 
@@ -1433,7 +1474,21 @@ Details that are load-bearing rather than incidental:
 - **Deep re-pulls overwrite, never merge.** The point of a re-pull is that the stored series
   is known-wrong; merging would preserve the very rows being corrected.
 
-**Decided 2026-09-07: nothing fetches until the accounts exist.** The repository holds a
+**Superseded 2026-09-09 — the daily job now runs on GitHub Actions.** The rejection below
+rested on "committing a 127MB dataset nightly would bloat the repository". That premise is
+gone: prices live in Supabase, so `.github/workflows/daily.yml` commits nothing at all. The
+second objection, unreliable cron timing, was overweighted — the job runs at 20:00 IST and
+only has to finish before the 09:15 open, so a thirty-minute delay is irrelevant. The
+repository is public, so Actions minutes are free.
+
+The one genuinely new risk, that Yahoo throttles datacentre IPs harder than residential ones,
+was measured before committing to it: **60 requests at the job's own pacing from a datacentre
+IP returned zero 429s**, median latency 82ms, extrapolating to ~12 minutes for all 2,240
+instruments. GitHub's ranges are shared more widely than that test's, so if throttling does
+appear it will surface as 429s in the workflow log — at which point a VPS becomes the answer
+after all. DigitalOcean is therefore deferred, not cancelled.
+
+**Historic — decided 2026-09-07, superseded above: nothing fetches until the accounts exist.** The repository holds a
 static snapshot as of 2026-09-04, and it goes one trading day more stale each day until
 the pipeline is live — including the workbook, which is one dated build of a thing
 designed to become daily. That is accepted rather than worked around.
