@@ -23,6 +23,12 @@
 -- written, and widening a column cannot recover digits the old type discarded.
 --   node load_supabase.mjs        (idempotent; upserts on universe_id, trade_date)
 
+-- ALTER COLUMN TYPE rewrites the whole table, and prices_daily holds ~2.28M rows.
+-- The SQL Editor's default statement timeout is short enough to cut that off partway,
+-- which rolls back and looks like a failure rather than a timeout. Raised for this
+-- session only; it reverts when the editor tab's connection closes.
+set statement_timeout = '15min';
+
 alter table prices_daily
   alter column high  type numeric(20, 10),
   alter column low   type numeric(20, 10),
