@@ -48,6 +48,10 @@ console.log("\n  rows");
 for (const t of TABLES) {
   const r = await rowCount(t);
   if (r.error) { console.log(`    ${t.padEnd(28)} unreadable: ${r.error}`); continue; }
+  // PostgREST can answer a head-count with a null count. Reading that as a number
+  // throws, and a report that crashes on the way to warning you about a limit is
+  // worse than one that says "unknown".
+  if (r.count == null) { console.log(`    ${t.padEnd(28)}     unknown`); continue; }
   if (t === "prices_daily") prices = r.count;
   console.log(`    ${t.padEnd(28)} ${r.count.toLocaleString().padStart(11)}`);
 }
