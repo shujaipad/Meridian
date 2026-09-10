@@ -44,7 +44,16 @@ create table prices_daily (
   volume        bigint,
   unique (universe_id, trade_date)
 );
-create index on prices_daily (universe_id, trade_date desc);
+-- NO separate index here. The unique constraint above already creates a btree on
+-- (universe_id, trade_date), and that serves every read this project issues: they
+-- all filter on universe_id and range on trade_date, and they all order ASCENDING.
+--
+-- A second index on (universe_id, trade_date DESC) used to sit here. It was never
+-- exercised -- no query anywhere orders descending -- and it cost 137MB on the live
+-- database, duplicating an index that cannot be dropped because upserts conflict on
+-- it. On a 500MB tier that redundancy was a quarter of the budget, and it helped push
+-- the project into read-only mode. Direction only matters to an index when something
+-- actually asks for that order.
 
 create table fundamentals_annual (
   id            bigserial primary key,
