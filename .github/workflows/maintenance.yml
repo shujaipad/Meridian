@@ -1,0 +1,78 @@
+name: maintenance
+
+# Everything that used to need a laptop, as a button.
+#
+# On 2026-09-10 the database hit its 500MB ceiling and went read-only. Every
+# recovery path -- reload, trim, republish -- ran through one person's Windows
+# machine, and that machine was about to be a thousand miles away for eleven days.
+# That is the actual single point of failure the incident exposed; the disk was
+# just what revealed it.
+#
+# The secrets this needs are already in the repository, so a runner can do
+# everything the laptop did. Trigger it from Actions -> maintenance -> Run
+# workflow, which works fine in a phone browser.
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "What to run"
+        type: choice
+        required: true
+        default: report
+        options:
+          - report                # read-only: what is in the database right now
+          - reload-prices         # refill prices_daily from the committed CSVs
+          - republish-screens     # recompute and republish from whatever prices exist
+          - reload-and-republish  # both, in order
+      since:
+        description: "Earliest bar to load (YYYY-MM-DD). Ignored unless reloading."
+        type: string
+        required: false
+        default: "2023-09-01"
+
+# Never let two of these overlap, and never let one cancel another mid-write.
+concurrency:
+  group: meridian-database
+  cancel-in-progress: false
+
+jobs:
+  maintenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Fail early if the secrets are missing
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "::error::SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set as repository secrets."
+            exit 1
+          fi
+
+      - run: npm install --no-save @supabase/supabase-js
+
+      # Always, whatever the task: say what is in the database before touching it.
+      # A maintenance run that does not show its starting state is a run you cannot
+      # reason about afterwards.
+      - name: Report — before
+        run: node db_report.mjs
+
+      - name: Reload prices
+        if: ${{ inputs.task == 'reload-prices' || inputs.task == 'reload-and-republish' }}
+        run: |
+          echo "loading bars from ${{ inputs.since }} onward"
+          node --max-old-space-size=4096 load_supabase.mjs --since "${{ inputs.since }}"
+
+      - name: Republish screens
+        if: ${{ inputs.task == 'republish-screens' || inputs.task == 'reload-and-republish' }}
+        run: node --max-old-space-size=6144 compute_and_publish.mjs --from-db
+
+      - name: Report — after
+        if: ${{ always() && inputs.task != 'report' }}
+        run: node db_report.mjs
