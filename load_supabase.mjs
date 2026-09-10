@@ -81,6 +81,25 @@ const BATCH = 1000;
 // overflowed numeric(8,4) on this very data, and finding that 80% through a
 // half-hour load against a live project would be a bad way to learn it.
 const DRY = process.argv.includes("--dry-run");
+
+// --since YYYY-MM-DD loads only bars on or after that date, for every asset class.
+//
+// The database holds five years because that is what the backfill had; production
+// reads an 800-day trailing window and nothing else. On Supabase's 500MB tier those
+// unread years are most of the budget -- 2.28M rows at ~300MB clean, against ~122MB
+// for the window that is actually used -- and the project hit read-only mode because
+// of it. The full history stays in the committed CSVs either way, so this discards
+// nothing that cannot be reloaded by dropping the flag.
+//
+// Keep a real margin over the 800-day window: RS Rating needs 252 trading days and
+// the breadth series is 500 days long, both measured in TRADING days against a flag
+// given in CALENDAR days. Three years is a comfortable floor; two would not be.
+const SINCE_IDX = process.argv.indexOf("--since");
+const SINCE = SINCE_IDX >= 0 ? process.argv[SINCE_IDX + 1] : null;
+if (SINCE && !/^\d{4}-\d{2}-\d{2}$/.test(SINCE)) {
+  console.error(`--since expects YYYY-MM-DD, got "${SINCE}"`);
+  process.exit(1);
+}
 const DRY_DIR = process.argv.includes("--out")
   ? process.argv[process.argv.indexOf("--out") + 1] : join(BASE, "dryrun");
 
@@ -193,7 +212,7 @@ async function loadAssetClassPrices(ids) {
     // and two classes could otherwise collide on a short symbol.
     const tickerOf = Object.fromEntries(
       readCSV(join(BASE, `meridian-${c.dir}-master.csv`)).map((m) => [m.Symbol, m.YahooTicker]));
-    const rows = readCSV(path).map((r) => ({
+    const rows = readCSV(path).filter((r) => !SINCE || r.Date >= SINCE).map((r) => ({
       universe_id: ids[tickerOf[r.Symbol]], trade_date: r.Date,
       high: num(r.High), low: num(r.Low), close: num(r.Close), volume: int(r.Volume),
     })).filter((r) => r.universe_id);
@@ -294,6 +313,7 @@ async function loadPrices(ids) {
       const r = Object.fromEntries(c.map((v, i) => [head[i], v]));
       const id = ids[r.ISIN];
       if (!id) continue;                          // guarded against by check_data_integrity
+      if (SINCE && r.Date < SINCE) continue;
       batch.push({
         universe_id: id, trade_date: r.Date,
         high: num(r.High), low: num(r.Low), close: num(r.Close), volume: int(r.Volume),
@@ -316,6 +336,7 @@ async function loadPrices(ids) {
 
 // -------------------------------------------------------------------- main
 const t0 = Date.now();
+if (SINCE) console.log(`loading bars from ${SINCE} onward only (--since)`);
 if (progress.universe !== "complete") {
   await loadUniverse(); progress.universe = "complete"; save();
 } else console.log("universe: already complete, skipping");
