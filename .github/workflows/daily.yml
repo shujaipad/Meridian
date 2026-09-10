@@ -90,3 +90,23 @@ jobs:
       - name: Publish the workbook
         if: ${{ !inputs.dry_run }}
         run: node publish_workbook.mjs
+
+      # Retention, then the gauge. In that order: prune first so the number the check
+      # reads is the number after the night's housekeeping, not before it.
+      #
+      # This pair is the answer to 2026-09-10, when the database filled to its 500MB
+      # ceiling and went read-only. Nothing deleted anything, and nothing compared a
+      # size to a limit -- §6.5 recorded "500MB storage" in prose and it stayed prose
+      # while prices_daily sat at 74% of it from the day of the first load.
+      - name: Prune price history past the retention window
+        if: ${{ !inputs.dry_run }}
+        timeout-minutes: 15
+        run: node prune_prices.mjs
+
+      # Deliberately NOT `if: always()`. This is a check, and a check that runs after a
+      # failed publish reports on a half-finished state. It exits non-zero past 80%,
+      # which fails the run -- that is the point. A red job is how you find out in
+      # January instead of in September.
+      - name: Capacity check
+        if: ${{ !inputs.dry_run }}
+        run: node db_report.mjs

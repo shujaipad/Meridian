@@ -24,6 +24,7 @@ on:
           - reload-prices         # refill prices_daily from the committed CSVs
           - republish-screens     # recompute and republish from whatever prices exist
           - reload-and-republish  # both, in order
+          - prune                 # drop price history past the retention window
       since:
         description: "Earliest bar to load (YYYY-MM-DD). Ignored unless reloading."
         type: string
@@ -72,6 +73,10 @@ jobs:
       - name: Republish screens
         if: ${{ inputs.task == 'republish-screens' || inputs.task == 'reload-and-republish' }}
         run: node --max-old-space-size=6144 compute_and_publish.mjs --from-db
+
+      - name: Prune price history past the retention window
+        if: ${{ inputs.task == 'prune' }}
+        run: node prune_prices.mjs
 
       - name: Report — after
         if: ${{ always() && inputs.task != 'report' }}

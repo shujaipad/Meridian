@@ -77,6 +77,32 @@ try {
   console.log(`    unavailable: ${e.message}`);
 }
 
+// The job log, at last read by something. §6.5 says fetch_job_log backs "failure
+// alerts for the daily/quarterly jobs"; it has been written after every run since the
+// daily job was built and queried by nothing at all -- the evidence recorded, nobody
+// told. Half a silent-failure gap is still a silent-failure gap.
+console.log("\n  recent jobs");
+try {
+  const { data: jobs, error } = await db.from("fetch_job_log")
+    .select("job_type,status,message,finished_at")
+    .order("finished_at", { ascending: false }).limit(5);
+  if (error) throw new Error(error.message);
+  if (!jobs?.length) {
+    console.log("    no runs recorded yet");
+  } else {
+    for (const j of jobs) {
+      const when = (j.finished_at ?? "").slice(0, 16).replace("T", " ");
+      const mark = j.status === "success" ? "ok  " : "FAIL";
+      console.log(`    ${mark} ${when}  ${j.job_type}  ${(j.message ?? "").slice(0, 70)}`);
+    }
+    // A log that shows a failure and returns zero is the thing this replaces.
+    const lastFailed = jobs[0].status !== "success";
+    if (lastFailed) console.log("    ^ the most recent run did not succeed");
+  }
+} catch (e) {
+  console.log(`    unavailable: ${e.message}`);
+}
+
 // Byte sizes, if the helper function is installed. Optional on purpose: the report
 // must still work on a database where nobody has run the migration yet.
 let usedMb = null;

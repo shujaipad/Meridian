@@ -2314,6 +2314,56 @@ The engine is identical in both. Only what feeds it and what consumes it changes
 
 ---
 
+## 11b. Operations — the 2026-09-10 read-only incident and what came out of it
+
+**What happened.** The database reached Supabase's 500MB Free-plan ceiling and was put
+into read-only mode. Recovery was not straightforward, because the operations that
+reclaim space need space: `DELETE` must write a transaction log and `VACUUM FULL` must
+write a second copy of the table, and both failed with `No space left on device`.
+`TRUNCATE` was the only lever left, since it unlinks files rather than rewriting them.
+
+**Why it was avoidable.** Reconstructed against the real data afterwards, `prices_daily`
+was **368MB on the day of the first successful load** -- 74% of the budget before a
+single nightly append -- and **118MB of that was two indexes serving nothing**: a
+primary key on an `id` column no query reads, and a `(universe_id, trade_date DESC)`
+index duplicating the unique constraint, in a codebase where every read orders
+ascending. §6.5 records "500MB storage". The limit was written down and never once
+compared against a measurement.
+
+**The three failures, in order of how much they cost:**
+
+1. **No retention policy.** Production reads an 800-day window; the table held five
+   years. 1.17M of 2.28M rows had never been read by anything. Without deletion the
+   table grows ~87MB/year forever, so the ceiling was a matter of when.
+2. **No measurement.** Nothing anywhere compared a size to a limit.
+3. **Every recovery path ran through one laptop** -- which was about to be a thousand
+   miles away for eleven days. The disk was the trigger; this was the real exposure.
+
+**What was built in response:**
+
+| | |
+|---|---|
+| `prune_prices.mjs` | Deletes bars past a retention window (default 1,100 days), in date slices so no single transaction is large. Refuses below a 900-day floor, because compute reads 800 and pruning into that window changes the model's answers silently. Refuses to delete more than half the table. Runs nightly. |
+| `db_report.mjs` | Rows per table, per-class freshness, the last five job-log entries, byte sizes. Exits non-zero past 80%. Runs nightly and on every maintenance job. |
+| `supabase-migration-005-capacity.sql` | A read-only, `service_role`-only function returning table and index sizes -- PostgREST cannot issue the SQL these need. |
+| `.github/workflows/maintenance.yml` | report / reload-prices / republish-screens / reload-and-republish / prune, as a `workflow_dispatch` dropdown triggerable from a phone browser. The laptop is no longer a single point of failure. |
+| Two guards in `daily_fetch.mjs` | Aborts if under half the universe has stored history (an empty table looks like universal corporate actions one row at a time, and would trigger 2,240 five-year re-pulls). Aborts if more than 150 instruments are flagged for a deep re-pull, which is systemic rather than a day's worth of splits. |
+
+**A percentage was not enough, and this is the part worth remembering.** The first
+version of the capacity check failed the build above 80%. Checked against day one, 74%
+**passes** -- it would have printed the number and let it through. What was missing was
+not a gauge but a **date**. The report now projects one, and measures bytes-per-row from
+the live database rather than assuming it: a trimmed table is ~106 B/row and projects 19
+months of headroom, while day one's real figure, carrying both redundant indexes, was
+169 B/row and 13 months. The tidy assumption would have produced reassurance exactly
+where a warning belonged.
+
+**What is still not tracked:** Supabase egress (5GB/month; the screens payload is 0.68MB
+gzipped, so roughly 7,500 full page loads), and Vercel bandwidth. Neither is close, and
+neither has a check.
+
+---
+
 ## 11a. Shared pipeline plumbing — `meridian-io.js` (added 2026-09-09)
 
 `meridian-engine.js` holds the model. `meridian-io.js` holds everything the pipeline

@@ -182,6 +182,26 @@ const storedBy = {};
 for (const r of stored) (storedBy[r.universe_id] ||= {})[r.trade_date] = Number(r.close);
 console.log(`stored overlap window: ${stored.length.toLocaleString()} rows since ${since}`);
 
+// An instrument with no stored history escalates to a five-year deep re-pull, which is
+// exactly right for one instrument and catastrophic for all of them. On 2026-09-10
+// prices_daily was truncated to escape a full disk; had this job run that night it
+// would have found no history anywhere, concluded that every one of 2,240 instruments
+// needed its full history refetched, and spent the night putting ~300MB back into the
+// database that had just been emptied to save it.
+//
+// The distinction the code could not previously draw: "this instrument is new to us"
+// versus "this table is empty". Both look identical one row at a time. They are only
+// distinguishable in aggregate, which is why the check belongs here rather than in
+// the loop.
+const withHistory = targets.filter((u) => storedBy[u.id]).length;
+if (targets.length > 0 && withHistory < targets.length * 0.5) {
+  console.error(`\nOnly ${withHistory} of ${targets.length} instruments have any stored history.`);
+  console.error("That is not a day's worth of corporate actions -- prices_daily is empty or");
+  console.error("half-loaded, and continuing would trigger a full re-pull of everything.");
+  console.error("Load it first:  Actions -> maintenance -> reload-and-republish");
+  process.exit(1);
+}
+
 const flagged = [];
 const failures = [];
 let appended = 0, unchanged = 0;
@@ -258,6 +278,25 @@ for (const f of flagged) console.log(`  flagged ${f.symbol}: ${f.reason}`);
 // ---- PASS 2: deep re-pull, flagged only. Overwrite, never merge — the point of a
 // re-pull is that the stored series is known-wrong, and merging would preserve the
 // very rows being corrected.
+//
+// Capped, for the same reason as the guard above. A real trading day produces a
+// handful of splits and bonuses across 2,240 instruments; a hundred means the
+// detector is responding to something systemic -- a feed change, an adjustment
+// applied wholesale, a partial load -- and re-pulling five years for each would take
+// hours and could double the database. Refuse and report, rather than act on a
+// signal this size.
+const MAX_DEEP_REPULLS = 150;
+if (flagged.length > MAX_DEEP_REPULLS) {
+  console.error(`\n${flagged.length} instruments flagged for a deep re-pull, over the cap of ${MAX_DEEP_REPULLS}.`);
+  console.error("A normal day flags a handful. This many means something systemic --");
+  console.error("a feed change, a wholesale re-adjustment, or a partial load -- and");
+  console.error("re-pulling five years each could take hours and refill the database.");
+  console.error("\nFirst few:");
+  flagged.slice(0, 10).forEach((f) => console.error(`  ${f.symbol}: ${f.reason}`));
+  console.error("\nNo watermark moved; nothing is lost. Investigate before re-running.");
+  process.exit(1);
+}
+
 for (const u of flagged) {
   try {
     const bars = barsOf(await chart(u.identifier, DEEP_RANGE, false));
