@@ -42,7 +42,7 @@ import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { num, r2, r4, readAll, readCSV, withRetry } from "./meridian-io.js";
+import { num, r2, r4, readAll, readAllChunked, readCSV, withRetry } from "./meridian-io.js";
 
 import {
   bandOfRSRating, closesByKeyFromPrices, computeAll, computeBreadthSeries,
@@ -173,14 +173,19 @@ if (FROM_DB) {
     filter: (q) => q.eq("asset_class", "equity"),
     onPage: (rows) => rows.forEach((r) => { isinById[r.id] = r.identifier; }),
   });
-  console.log(`  reading prices_daily since ${cutoff} ...`);
+  const equityIds = Object.keys(isinById).map(Number);
+  console.log(`  reading prices_daily since ${cutoff} for ${equityIds.length} equities ...`);
   let n = 0;
-  await readAll(db, "prices_daily", "universe_id,trade_date,high,low,close,volume", {
+  // Blocked by instrument, not paged straight through the whole table: see
+  // readAllChunked. A flat offset walk over 2.1M rows dies on the statement timeout
+  // around page 800, because each page re-scans everything before it.
+  await readAllChunked(db, "prices_daily", "universe_id,trade_date,high,low,close,volume", {
+    idColumn: "universe_id", ids: equityIds,
     filter: (q) => q.gte("trade_date", cutoff).order("universe_id").order("trade_date"),
     onPage: (data) => {
       for (const r of data) {
         const isin = isinById[r.universe_id];
-        if (!isin) continue;                     // a non-equity row; handled per class below
+        if (!isin) continue;
         prices.push({ ISIN: isin, Date: r.trade_date, High: num(r.high), Low: num(r.low),
                       Close: num(r.close), Volume: num(r.volume) });
       }
@@ -330,9 +335,9 @@ for (const c of ASSET_CLASSES) {
     });
     const memberIds = new Set(Object.keys(symById).map(Number));
     rows = [];
-    await readAll(db, "prices_daily", "universe_id,trade_date,high,low,close,volume", {
-      filter: (q) => q.in("universe_id", [...memberIds]).gte("trade_date", cutoff)
-                      .order("universe_id").order("trade_date"),
+    await readAllChunked(db, "prices_daily", "universe_id,trade_date,high,low,close,volume", {
+      idColumn: "universe_id", ids: memberIds,
+      filter: (q) => q.gte("trade_date", cutoff).order("universe_id").order("trade_date"),
       onPage: (data) => {
         for (const r of data) {
           rows.push({ ISIN: symById[r.universe_id], Date: r.trade_date,

@@ -82,6 +82,42 @@ export async function readAll(db, table, columns, { filter, onPage } = {}) {
   }
 }
 
+/**
+ * Read every row for a set of instruments, a block of instruments at a time.
+ *
+ * `readAll` pages with OFFSET, which is fine for a few thousand rows and quietly
+ * quadratic beyond that: to return rows 800,000-801,000 the database must produce and
+ * discard the 800,000 before them, every time. Reading the 800-day price window that
+ * way -- 2.1M rows, ~2,100 pages -- got slower with every page until one crossed
+ * Supabase's statement timeout and the whole run died with
+ * `canceling statement due to statement timeout` at around page 800.
+ *
+ * Filtering to a small block of universe_ids first bounds the offset to that block's
+ * own rows: 25 instruments x ~800 bars is ~20,000 rows, so the deepest offset any
+ * single query sees is 20,000 rather than 2,100,000. Same number of requests overall,
+ * each one cheap and constant-cost.
+ *
+ * Row ORDER within an instrument is load-bearing -- computeTechnicalBlock walks the
+ * bars as given -- so callers must keep their .order("trade_date"). Blocking by id
+ * cannot disturb that: every row for an instrument falls in exactly one block.
+ */
+export async function readAllChunked(db, table, columns, { idColumn, ids, chunkSize = 25, filter, onPage } = {}) {
+  const out = onPage ? null : [];
+  const list = [...ids];
+  for (let i = 0; i < list.length; i += chunkSize) {
+    const block = list.slice(i, i + chunkSize);
+    for (let from = 0; ; from += PAGE) {
+      let q = db.from(table).select(columns).in(idColumn, block).range(from, from + PAGE - 1);
+      if (filter) q = filter(q);
+      const { data, error } = await q;
+      if (error) throw new Error(`reading ${table}: ${error.message}`);
+      if (onPage) onPage(data); else out.push(...data);
+      if (data.length < PAGE) break;
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- retry
 // Transport failures are retried; deterministic ones are not. A home connection
 // dropping mid-upload aborted the first real load, and every write behind this is an
