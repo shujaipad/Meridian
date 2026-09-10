@@ -118,6 +118,19 @@ if (sizeErr) {
   }
 }
 
+// Indexes that duplicate each other. prices_daily carried two btrees over the same
+// two columns for the life of the project -- 75.9MB of a 500MB tier, found twice by a
+// person reading a size listing, which is the wrong way to find it.
+const { data: dupes, error: dupErr } = await db.rpc("meridian_redundant_indexes");
+if (!dupErr && Array.isArray(dupes) && dupes.length) {
+  console.log("\n  redundant indexes");
+  for (const d of dupes) {
+    console.log(`    ${d.table_name}: ${(d.indexes || []).join(" + ")}`);
+    console.log(`      ${d.total_mb} MB total, ${d.reclaimable_mb} MB reclaimable by dropping all but one`);
+  }
+  console.log("    (which to keep is yours to pick -- one usually backs a constraint)");
+}
+
 // ---- the part that makes this a check rather than a printout -----------------
 //
 // A percentage alone would not have caught this. On day one prices_daily was 368MB of
