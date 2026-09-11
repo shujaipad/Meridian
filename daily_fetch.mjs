@@ -39,7 +39,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { r4, readAll, sleep, withRetry } from "./meridian-io.js";
+import { r4, readAll, readCSV, sleep, withRetry } from "./meridian-io.js";
 
 const BASE = dirname(fileURLToPath(import.meta.url));
 const CHART = "https://query1.finance.yahoo.com/v8/finance/chart/";
@@ -170,6 +170,53 @@ console.log(`daily fetch ${DRY ? "(DRY RUN — nothing is written)" : ""}`);
 
 const universe = await readAll(db, "universe", "id,asset_class,identifier,symbol",
                                { filter: (q) => q.eq("status", "active") });
+
+// WHAT TO ASK YAHOO FOR. `identifier` is a Yahoo ticker only for the 100 non-equity
+// instruments; for the 2,138 equities it is an ISIN, and Yahoo has never heard of an
+// ISIN. Calling chart(u.identifier) therefore 404'd on every single equity, retried
+// three times with backoff, and burned ~7.7 seconds per instrument achieving nothing
+// -- about 4.6 hours for the universe, against a 60- then 80-minute budget. The job
+// could not have finished, and had not, since the day it was written.
+//
+// The fix is a lookup, not a guess. meridian-yahoo-tickers.csv maps each ISIN to the
+// ticker that actually returns data, resolved once by resolve_tickers.mjs against
+// Yahoo itself. Resolving nightly would mean paying up to four requests per
+// instrument to rediscover a constant.
+const TICKER_MAP = join(BASE, "meridian-yahoo-tickers.csv");
+if (!existsSync(TICKER_MAP)) {
+  // Checked rather than left to throw: a bare ENOENT from deep inside readCSV is a
+  // worse start to a debugging session than a sentence saying which file and how to
+  // make it.
+  console.error(`missing ${TICKER_MAP}`);
+  console.error("Equities are keyed by ISIN, which Yahoo does not accept. Build the map:");
+  console.error("  node resolve_tickers.mjs");
+  process.exit(1);
+}
+const tickerByIsin = Object.fromEntries(
+  readCSV(TICKER_MAP).map((r) => [r.ISIN, r.YahooTicker]));
+
+function yahooTickerFor(u) {
+  if (u.asset_class !== "equity") return u.identifier;   // already a Yahoo ticker
+  return tickerByIsin[u.identifier] ?? null;
+}
+
+// An equity with no mapping has no Yahoo listing that returns data -- resolve_tickers
+// tried four candidates. Skipping is right; pretending otherwise means 404s.
+const unmapped = universe.filter((u) => u.asset_class === "equity" && !yahooTickerFor(u));
+if (unmapped.length) {
+  console.log(`${unmapped.length} equities have no Yahoo ticker and are skipped`
+            + ` (first: ${unmapped.slice(0, 5).map((u) => u.symbol).join(", ")})`);
+}
+// Refusing here rather than limping: if the map is missing or stale enough that most
+// of the universe is unroutable, the run would look like a catastrophic Yahoo outage
+// when it is really a missing file.
+const equities = universe.filter((u) => u.asset_class === "equity").length;
+if (equities > 0 && unmapped.length > equities * 0.2) {
+  console.error(`\n${unmapped.length} of ${equities} equities have no Yahoo ticker.`);
+  console.error("meridian-yahoo-tickers.csv is missing or stale. Rebuild it:");
+  console.error("  node resolve_tickers.mjs");
+  process.exit(1);
+}
 const targets = LIMIT ? universe.slice(0, LIMIT) : universe;
 console.log(`universe: ${targets.length} active instruments`);
 
@@ -208,9 +255,10 @@ let appended = 0, unchanged = 0;
 const sweepStart = Date.now();
 
 for (const [i, u] of targets.entries()) {
+  if (!yahooTickerFor(u)) { unchanged++; continue; }   // no listing; reported above
   let result;
   try {
-    result = await chart(u.identifier, SWEEP_RANGE, true);
+    result = await chart(yahooTickerFor(u), SWEEP_RANGE, true);
   } catch (e) {
     // Loud, and the watermark does not move: the next run retries this instrument.
     failures.push({ symbol: u.symbol, identifier: u.identifier, error: String(e).slice(0, 120) });
@@ -299,7 +347,7 @@ if (flagged.length > MAX_DEEP_REPULLS) {
 
 for (const u of flagged) {
   try {
-    const bars = barsOf(await chart(u.identifier, DEEP_RANGE, false));
+    const bars = barsOf(await chart(yahooTickerFor(u), DEEP_RANGE, false));
     if (!bars.length) { failures.push({ symbol: u.symbol, error: "deep re-pull returned no bars" }); continue; }
     if (!DRY) {
       const { error } = await db.from("prices_daily").delete().eq("universe_id", u.id);
