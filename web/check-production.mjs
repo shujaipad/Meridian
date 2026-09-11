@@ -178,6 +178,20 @@ await page.waitForTimeout(1500);
 check("equity screen still shows only equities (2138, not 2240)",
       /2138 stocks loaded/.test(await body()), true);
 
+// --- password recovery ------------------------------------------------------
+// Added 2026-09-11. The switch to password sign-in shipped signInWithPassword and no
+// way to recover one, so every forgotten password was a manual job for the owner
+// forever. Nothing caught it because nothing tested a path that did not exist.
+//
+// Placement matters and was got wrong once: appended after process.exit(), where it
+// read like coverage and could never run. A check that cannot execute is worse than
+// no check at all.
+await page.evaluate(() => window.__meridianFireRecovery?.());
+await page.waitForTimeout(900);
+const recovery = await page.locator("body").innerText();
+check("recovery link shows the set-password screen", /Choose a new password/.test(recovery), true);
+check("set-password asks for confirmation", /Confirm it/.test(recovery), true);
+
 console.log("");
 if (pageErrors.length) {
   console.log("page errors:");

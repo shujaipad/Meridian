@@ -1368,6 +1368,40 @@ DigitalOcean's Indian region is Bangalore (`BLR1`), ~20–30 ms from Mumbai. Lat
 far less for the VPS than for the browser — the nightly job writes ~2,100 rows on an ordinary
 day (§3.5) — but there is no reason to pay for distance that costs nothing to avoid.
 
+#### Password recovery (added 2026-09-11, after it was found missing in use)
+
+Switching sign-in from magic-link to password on 2026-09-07 added
+`signInWithPassword` and **no way to recover a password**. The gap surfaced only when
+someone needed it: the Supabase dashboard's "Send password recovery" mailed a link to
+`http://localhost:3000`, and following it produced
+`error_code=otp_expired` on a page that does not exist.
+
+Three separate faults in one URL:
+
+1. **Supabase's Site URL was still the shipped default**, `http://localhost:3000`. Every
+   recovery mail pointed at a dead address. Fixed in the dashboard, and belt-and-braces
+   in code: `resetPasswordForEmail` now passes `redirectTo: window.location.origin`
+   explicitly, so the link returns to whatever host asked for it rather than to the
+   project-wide default.
+2. **The link had expired or been consumed.** Recovery links last one hour and work
+   once; mail scanners that prefetch links can spend one before the recipient clicks.
+3. **The app had nowhere for a recovery link to land.** No `PASSWORD_RECOVERY`
+   handling, no set-password screen. Even a valid link would have dropped the user on
+   the sign-in box with no explanation.
+
+Now: `SetPassword.jsx` renders when Supabase fires `PASSWORD_RECOVERY` — that session
+is real but provisional, so the app shows nothing else until a new password is set.
+A "Forgot your password?" path on the sign-in screen requests the mail. And auth
+failures, which Supabase returns in the URL **fragment** where no server ever sees
+them, are parsed and explained on screen instead of vanishing.
+
+Two production checks cover it, and were negative-tested by removing the recovery
+branch: both fail without it.
+
+**The pattern, again:** this was a path that existed in the documentation's intent and
+in no code, and nothing tested it because there was nothing to test. Same shape as the
+sectoral columns, the 200-bar rule, and the 500MB limit.
+
 #### Sign-in method per account (locked 2026-09-07)
 
 Not a cosmetic preference. GitHub OAuth across every service would make one account a

@@ -27,13 +27,19 @@ const inputStyle = {
   color: C.text, fontFamily: "inherit",
 };
 
-export default function Auth() {
-  const [mode, setMode] = useState("password");   // "password" | "link"
+const linkButton = {
+  background: "transparent", border: "none", padding: 0,
+  color: C.gold, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit",
+  textAlign: "left",
+};
+
+export default function Auth({ linkError = null }) {
+  const [mode, setMode] = useState("password");   // "password" | "link" | "reset"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [state, setState] = useState({ status: "idle" });
 
-  const canSubmit = email.trim() && (mode === "link" || password);
+  const canSubmit = email.trim() && (mode === "password" ? Boolean(password) : true);
 
   async function submit(e) {
     e.preventDefault();
@@ -46,6 +52,19 @@ export default function Auth() {
       });
       // On success onAuthStateChange swaps this screen out; nothing to do here.
       setState(error ? { status: "error", message: error.message } : { status: "idle" });
+      return;
+    }
+
+    if (mode === "reset") {
+      // redirectTo is passed explicitly and is NOT optional here. Without it Supabase
+      // falls back to the project's Site URL, which ships as http://localhost:3000 --
+      // and a recovery mail pointing at localhost is a link nobody can follow. That is
+      // exactly what happened on 2026-09-11. Passing window.location.origin means the
+      // link comes back to whatever host the request was made from.
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: window.location.origin,
+      });
+      setState(error ? { status: "error", message: error.message } : { status: "sent" });
       return;
     }
 
@@ -76,6 +95,16 @@ export default function Auth() {
           Fundamental + technical signal ledger
         </div>
 
+        {linkError && state.status === "idle" && (
+          <div style={{
+            background: C.surface, border: `1px solid ${C.loss}`, borderRadius: 8,
+            padding: 14, fontSize: 12.5, lineHeight: 1.6, color: C.dim, marginBottom: 18,
+          }}>
+            <div style={{ color: C.loss, fontWeight: 600, marginBottom: 4 }}>That link did not work</div>
+            {linkError}
+          </div>
+        )}
+
         {state.status === "sent" ? (
           <div style={{
             background: C.surface, border: `1px solid ${C.border}`,
@@ -83,8 +112,9 @@ export default function Auth() {
           }}>
             <div style={{ color: C.gold, fontWeight: 600, marginBottom: 6 }}>Check your email</div>
             <div style={{ color: C.dim }}>
-              If <span style={{ color: C.text }}>{email}</span> has access, a sign-in link is on
-              its way. It expires in an hour, and works once.
+              If <span style={{ color: C.text }}>{email}</span> has access, a{" "}
+              {mode === "reset" ? "password-reset" : "sign-in"} link is on its way. It expires in
+              an hour, and works once.
             </div>
             <button
               onClick={() => { setMode("password"); setState({ status: "idle" }); }}
@@ -128,9 +158,10 @@ export default function Auth() {
                 borderRadius: 6, cursor: canSubmit ? "pointer" : "default", fontFamily: "inherit",
               }}
             >
-              {state.status === "working"
-                ? (mode === "password" ? "Signing in…" : "Sending…")
-                : (mode === "password" ? "Sign in" : "Email me a sign-in link")}
+              {state.status === "working" ? "Working…"
+                : mode === "password" ? "Sign in"
+                : mode === "reset" ? "Email me a reset link"
+                : "Email me a sign-in link"}
             </button>
 
             {state.status === "error" && (
@@ -139,16 +170,22 @@ export default function Auth() {
               </div>
             )}
 
-            <button
-              type="button"
-              onClick={() => { setMode(mode === "password" ? "link" : "password"); setState({ status: "idle" }); }}
-              style={{
-                marginTop: 14, background: "transparent", border: "none", padding: 0,
-                color: C.gold, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit",
-              }}
-            >
-              {mode === "password" ? "Email me a sign-in link instead" : "Use a password instead"}
-            </button>
+            <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-start" }}>
+              <button
+                type="button"
+                onClick={() => { setMode(mode === "password" ? "link" : "password"); setState({ status: "idle" }); }}
+                style={linkButton}
+              >
+                {mode === "password" ? "Email me a sign-in link instead" : "Use a password instead"}
+              </button>
+              {mode !== "reset" && (
+                <button
+                  type="button"
+                  onClick={() => { setMode("reset"); setState({ status: "idle" }); }}
+                  style={linkButton}
+                >Forgot your password?</button>
+              )}
+            </div>
 
             <div style={{ color: C.dim, fontSize: 11.5, marginTop: 16, lineHeight: 1.6 }}>
               Meridian is invite-only. Access is granted by the owner — there is no sign-up.

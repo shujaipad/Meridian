@@ -37,6 +37,15 @@ export const supabase = {
       notify("SIGNED_IN", session);
       return { data: { session }, error: null };
     },
+    // Recovery. The real flow mails a link, the link signs the user in, and Supabase
+    // fires PASSWORD_RECOVERY -- so the fixture fires it directly, which is what the
+    // app actually responds to.
+    resetPasswordForEmail: async () => ({ data: {}, error: null }),
+    updateUser: async ({ password }) => {
+      if (!password || password.length < 6) return { data: {}, error: { message: "Password should be at least 6 characters" } };
+      return { data: { user: session.user }, error: null };
+    },
+    __fireRecovery: () => notify("PASSWORD_RECOVERY", session),
   },
   from(table) {
     const rows = fixture[table] || [];

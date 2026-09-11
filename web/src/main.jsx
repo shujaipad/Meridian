@@ -3,12 +3,18 @@ import { createRoot } from "react-dom/client";
 
 import App from "@meridian/meridian.jsx";
 import Auth from "./Auth.jsx";
+import SetPassword from "./SetPassword.jsx";
 import { loadScreens } from "./loadScreens.js";
 import { installStorage } from "./storage.js";
 import { clientError, configError, supabase } from "./supabase.js";
 
 // Before anything renders: meridian.jsx reads window.storage during its first effect.
 installStorage();
+
+// Fixture-mode only: lets the production check drive the recovery path, which real
+// Supabase only reaches via an emailed link. Guarded on the stub exporting the hook,
+// so it is absent from the real build rather than merely unused in it.
+if (supabase?.auth?.__fireRecovery) window.__meridianFireRecovery = supabase.auth.__fireRecovery;
 
 const C = { bg: "#0F1115", text: "#E6E9EF", dim: "#8B93A3", gold: "#C9A227", loss: "#D2544A" };
 
@@ -39,15 +45,42 @@ function SignOut() {
   );
 }
 
+// Supabase returns auth failures in the URL FRAGMENT, not the query string, so the
+// server never sees them and nothing surfaces them unless the app looks. An expired
+// recovery link would otherwise drop the user on a plain sign-in box with no
+// explanation for why the link they just followed did nothing.
+function authErrorFromUrl() {
+  const raw = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : "";
+  if (!raw) return null;
+  const p = new URLSearchParams(raw);
+  const code = p.get("error_code");
+  if (!code && !p.get("error")) return null;
+  // Clear it so a reload does not re-show a stale error.
+  history.replaceState(null, "", window.location.pathname + window.location.search);
+  const description = p.get("error_description")?.replace(/\+/g, " ");
+  if (code === "otp_expired") {
+    return "That link has expired or was already used. Recovery links last one hour and "
+         + "work once — ask for a new one below.";
+  }
+  return description || p.get("error") || "The link could not be used.";
+}
+
 function Root() {
   const [session, setSession] = useState(undefined); // undefined = still checking
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  // A recovery link signs the user in, but that session is provisional: the only thing
+  // that should happen while it holds is choosing a new password.
+  const [recovering, setRecovering] = useState(false);
+  const [linkError] = useState(authErrorFromUrl);
 
   useEffect(() => {
     if (!supabase) return;
     supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s ?? null));
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
+      if (event === "PASSWORD_RECOVERY") setRecovering(true);
+      setSession(s ?? null);
+    });
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -69,7 +102,8 @@ function Root() {
     </Centered>;
   }
   if (session === undefined) return <Centered>Checking your session…</Centered>;
-  if (session === null) return <Auth />;
+  if (recovering) return <SetPassword onDone={() => setRecovering(false)} />;
+  if (session === null) return <Auth linkError={linkError} />;
 
   if (error) {
     return <Centered>
