@@ -1511,7 +1511,7 @@ Details that are load-bearing rather than incidental:
 
 **Superseded 2026-09-09 — the daily job now runs on GitHub Actions.** The rejection below
 rested on "committing a 127MB dataset nightly would bloat the repository". That premise is
-gone: prices live in Supabase, so `.github/workflows/daily.yml` commits nothing at all. The
+gone: prices live in Supabase, so `.github/workflows/nightly.yml` commits nothing at all. The
 second objection, unreliable cron timing, was overweighted — the job runs at 20:00 IST and
 only has to finish before the 09:15 open, so a thirty-minute delay is irrelevant. The
 repository is public, so Actions minutes are free.

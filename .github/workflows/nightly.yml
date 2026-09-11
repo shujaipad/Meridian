@@ -1,4 +1,17 @@
-name: daily pipeline
+name: nightly pipeline
+
+# Renamed from daily.yml on 2026-09-11, and the rename IS the fix.
+#
+# GitHub identifies a workflow by its file path, and "disabled" is a property of that
+# identity rather than of the file's contents. daily.yml was disabled by hand on the
+# 10th so it could not refill a database that had just been emptied; re-enabling it
+# afterwards needs a button that GitHub's mobile layout does not render, and the owner
+# was travelling with only a phone. A new path is a new workflow, and a new workflow
+# starts enabled -- so this runs, and the old identity stays disabled forever with no
+# file behind it, which means there is no chance of both firing.
+#
+# Worth keeping in mind generally: on Actions, "disabled" is sticky to the path and
+# survives every change to the file, including ones that would otherwise redeploy it.
 
 # The nightly job (§3.5, §6.3), running on GitHub Actions rather than a VPS.
 #
