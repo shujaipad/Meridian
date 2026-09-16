@@ -57,11 +57,20 @@ jobs:
     # no longer starve the steps after it, and daily_fetch.mjs stops itself at 75
     # minutes with a summary rather than being killed without one.
     timeout-minutes: 150
+    # The mirror step commits the night's bars back to main. Nothing else here writes
+    # to the repository.
+    permissions:
+      contents: write
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: the mirror step rebases onto main before pushing, and a
+          # shallow clone makes that unreliable. The clone costs under a minute on a
+          # job that takes forty, and Actions minutes are free on a public repo.
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -115,6 +124,42 @@ jobs:
       - name: Publish the workbook
         if: ${{ !inputs.dry_run }}
         run: node publish_workbook.mjs
+
+      # The git mirror, before the prune: these files are the only copy of this data
+      # outside a free-tier database, and the copy that made 2026-09-10 survivable.
+      # Frozen at the backfill they get less true every night, which also makes the
+      # research sandbox they feed less useful every night.
+      #
+      # One immutable file per run — measured at ~45KB a night against 14.4MB for
+      # appending to the 42MB base file. See append_history.mjs for the measurement.
+      - name: Mirror the night's bars into git
+        if: ${{ !inputs.dry_run }}
+        timeout-minutes: 15
+        run: node --max-old-space-size=4096 append_history.mjs
+
+      - name: Commit the mirror
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -e
+          git config user.name  "meridian-nightly"
+          git config user.email "noreply@github.com"
+          # Only the append directory, never anything else the job may have touched.
+          git add history/appends
+          if git diff --cached --quiet; then
+            echo "nothing new to mirror"
+            exit 0
+          fi
+          git commit -m "Price history through $(date -u +%Y-%m-%d)"
+          # Rebase rather than merge: this branch is shared with real work, and a
+          # merge commit a night would be noise. The files are immutable and
+          # new, so a rebase here cannot conflict with anything.
+          for i in 1 2 3 4; do
+            git pull --rebase --autostash origin main && git push origin HEAD:main && exit 0
+            echo "push attempt $i failed; retrying"
+            sleep $((2 ** i))
+          done
+          echo "::error::could not push the price mirror after 4 attempts"
+          exit 1
 
       # Retention, then the gauge. In that order: prune first so the number the check
       # reads is the number after the night's housekeeping, not before it.

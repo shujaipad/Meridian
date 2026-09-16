@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 
 import { egressPerMonthMb, EGRESS_LIMIT_MB, evaluateHealth, mbPerYear, RUNS_PER_MONTH,
          usedMbOf, worstLevel } from "./meridian-health.js";
+import { mergeRows, newestByClass, nextAppendName } from "./meridian-history.js";
 import { SNAPSHOT_TABLES } from "./meridian-schema.js";
 import { arrearsInstrumentDays, deepRepullCap, medianNewestStored, restatementOf,
          SETTLEMENT_DAYS, tradingArrearsSince, unabsorbedEventDate,
@@ -489,6 +490,55 @@ await check("the clear list covers every table the publish step writes", () => {
   const cleared = new Set(SNAPSHOT_TABLES.map((t) => t.table));
   const missing = written.filter((t) => !cleared.has(t));
   return missing.length ? `published but never cleared: ${missing.join(", ")}` : null;
+});
+
+// ---------------------------------------------------------------- git price mirror
+console.log("\ngit price mirror");
+
+const bar = (Key, Date, Close, AssetClass = "equity") => ({ AssetClass, Key, Date, Close });
+
+await check("a new bar is added, an existing one left alone", () => {
+  const merged = mergeRows([[bar("A", "2026-09-16", 10)], [bar("A", "2026-09-17", 11)]]);
+  return eq(merged.map((r) => `${r.Date}:${r.Close}`).sort(),
+            ["2026-09-16:10", "2026-09-17:11"], "merged");
+});
+
+// The whole reason last-wins is the rule: a deep re-pull's history must overwrite.
+await check("a later correction overwrites an earlier bar", () => {
+  const merged = mergeRows([[bar("A", "2026-09-16", 10)], [bar("A", "2026-09-16", 9.5)]]);
+  if (merged.length !== 1) return `${merged.length} rows, want 1`;
+  return eq(merged[0].Close, 9.5, "close");
+});
+
+await check("order is what decides, so batches must be passed oldest first", () => {
+  const merged = mergeRows([[bar("A", "2026-09-16", 9.5)], [bar("A", "2026-09-16", 10)]]);
+  return eq(merged[0].Close, 10, "close");
+});
+
+await check("the same date for two instruments is two bars, not a collision", () => {
+  const merged = mergeRows([[bar("A", "2026-09-16", 10), bar("B", "2026-09-16", 20)]]);
+  return eq(merged.length, 2, "rows");
+});
+
+// The bug the per-class watermark exists to prevent: the committed equity history ends
+// 2026-09-04 and the non-equity files end 2026-09-09. One global watermark would skip
+// five days of equity bars, invisibly, because a gap looks like a holiday.
+await check("watermarks are per asset class, not one global maximum", () => {
+  const rows = [bar("A", "2026-09-04", 1, "equity"), bar("GC=F", "2026-09-09", 2, "commodity")];
+  const wm = newestByClass(rows);
+  if (wm.equity !== "2026-09-04") return `equity watermark ${wm.equity}, want 2026-09-04`;
+  return eq(wm.commodity, "2026-09-09", "commodity watermark");
+});
+
+await check("a class with no rows has no watermark rather than a wrong one", () =>
+  eq(newestByClass([]), {}, "watermarks"));
+
+await check("append filenames are immutable — a second run takes a suffix", () => {
+  const have = new Set(["2026-09-17.csv"]);
+  if (nextAppendName("2026-09-17", (f) => have.has(f)) !== "2026-09-17.2.csv") return "did not suffix";
+  have.add("2026-09-17.2.csv");
+  if (nextAppendName("2026-09-17", (f) => have.has(f)) !== "2026-09-17.3.csv") return "did not keep counting";
+  return eq(nextAppendName("2026-09-18", (f) => have.has(f)), "2026-09-18.csv", "a fresh day");
 });
 
 // ---------------------------------------------------------------- health

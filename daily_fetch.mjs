@@ -42,7 +42,7 @@
  * what made the older Colab scripts unusable unattended (§7.1).
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -70,6 +70,8 @@ const DEEP_RANGE = "5y";
 // Shared with prune_prices.mjs. A deep re-pull that wrote beyond it would only be
 // writing rows the same night's prune then deletes.
 const RETENTION_DAYS = DEFAULT_RETENTION_DAYS;
+// Handed to append_history.mjs in the same job; see there.
+const REPULLED_FILE = ".meridian-repulled.json";
 
 const DRY = process.argv.includes("--dry-run");
 const LIMIT = process.argv.includes("--limit")
@@ -398,6 +400,17 @@ for (const u of flagged) {
     failures.push({ symbol: u.symbol, error: `deep re-pull: ${String(e).slice(0, 120)}` });
   }
   await sleep(PAUSE_MS);
+}
+
+// What the git mirror needs to know, written where append_history.mjs can read it in
+// the same job. A deep re-pull rewrites history BELOW the append watermark, so the
+// mirror cannot discover those rows by asking "what is new" -- it has to be told.
+if (!DRY) {
+  writeFileSync(join(BASE, REPULLED_FILE), JSON.stringify({
+    as_of: new Date().toISOString().slice(0, 10),
+    universe_ids: flagged.map((u) => u.id),
+    symbols: flagged.map((u) => u.symbol),
+  }));
 }
 
 if (!DRY) {
