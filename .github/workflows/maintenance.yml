@@ -25,11 +25,17 @@ on:
           - republish-screens     # recompute and republish from whatever prices exist
           - reload-and-republish  # both, in order
           - prune                 # drop price history past the retention window
+          - invite                # create accounts for invited users (no email sent)
       since:
         description: "Earliest bar to load (YYYY-MM-DD). Ignored unless reloading."
         type: string
         required: false
         default: "2023-09-01"
+      emails:
+        description: "Comma-separated addresses to create accounts for. Only used by 'invite'."
+        type: string
+        required: false
+        default: ""
 
 # Never let two of these overlap, and never let one cancel another mid-write.
 concurrency:
@@ -63,6 +69,26 @@ jobs:
       # reason about afterwards.
       - name: Report — before
         run: node db_report.mjs
+
+      # Creates accounts directly; sends nothing. Supabase's built-in email refuses
+      # addresses outside the project's team and is capped at 2/hour, so a dashboard
+      # invite to an outside address does not arrive at all — and custom SMTP needs the
+      # sending domain that has not been bought yet (§8).
+      #
+      # INVITE_PASSWORD is required here and the script refuses without it: this
+      # repository is public, so a generated password printed in the run log would be a
+      # live credential published to the world. A secret is masked by Actions, and the
+      # owner already knows its value.
+      - name: Create accounts for invited users
+        if: ${{ inputs.task == 'invite' }}
+        env:
+          INVITE_PASSWORD: ${{ secrets.INVITE_PASSWORD }}
+          # Through the environment, never interpolated into the command line.
+          # `${{ }}` is substituted into the shell script BEFORE the shell parses it, so
+          # an input containing a quote and a semicolon would run as a second command.
+          # Only collaborators can dispatch this, which bounds it rather than fixing it.
+          EMAILS: ${{ inputs.emails }}
+        run: node invite_users.mjs --emails "$EMAILS"
 
       - name: Reload prices
         if: ${{ inputs.task == 'reload-prices' || inputs.task == 'reload-and-republish' }}

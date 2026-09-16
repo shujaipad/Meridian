@@ -192,6 +192,25 @@ const recovery = await page.locator("body").innerText();
 check("recovery link shows the set-password screen", /Choose a new password/.test(recovery), true);
 check("set-password asks for confirmation", /Confirm it/.test(recovery), true);
 
+// --- changing a password from inside the app ----------------------------------
+// The only way an invited user can replace the password the owner generated for them.
+// "Forgot password" cannot help: it sends a link, and this project has no way to
+// deliver mail to anyone but its owner until the sending domain exists (§8).
+await page.goto(URL_BASE);
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForTimeout(900);
+check("a signed-in user can reach change-password", 
+      await page.locator("text=change password").isVisible(), true);
+await page.locator("text=change password").click();
+await page.waitForTimeout(300);
+check("change-password asks for a new one",
+      /At least 6 characters/.test(await page.locator("body").innerText()), true);
+await page.locator("#change-password").fill("a-much-better-password");
+await page.locator("form button[type=submit]").click();
+await page.waitForTimeout(600);
+check("changing a password needs no email round-trip",
+      /Password changed/.test(await page.locator("body").innerText()), true);
+
 // --- invitation ---------------------------------------------------------------
 // Added 2026-09-16, the day the first outside users were invited.
 //

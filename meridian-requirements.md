@@ -2963,6 +2963,77 @@ watermarks now read 2026-09-16. `meridian-history.js` holds the merge rule as co
 
 ---
 
+## 11i. Inviting the first outside users — what "email invite" turned out to mean
+*(2026-09-16)*
+
+The owner invited several people to evaluate Meridian, and asked whether the email
+invite function was working. Three separate things were wrong with that path, and only
+one of them was a bug.
+
+**There is no self-registration, and there never was.** §6.6 locks Meridian invite-only;
+`Auth.jsx` carries no `signUp` call and the sign-in screen says so on its face. Anyone
+told to "register" will reach a sign-in box they cannot get past. That is the system
+working as specified — but "register" and "be invited" are different verbs, and only
+one of them exists here.
+
+**Supabase's built-in email cannot reach them at all.** Its documentation is explicit:
+the default service "will refuse to deliver messages to addresses that are not part of
+the project's team", and it is capped at **2 messages an hour**. So a dashboard "Invite
+user" sent to a friend does not arrive late or unreliably — it does not arrive. Adding
+each invitee to the Supabase team so that it would arrive is not a workaround: it hands
+them the dashboard, and with it the database.
+
+Custom SMTP is the real fix and needs a verified sending domain (§8, not bought).
+Resend's shared sender cannot substitute — it delivers only to the Resend account
+holder's own address. **Until the domain exists, this project has no way to send email
+to anyone but its owner.** That is worth stating plainly, because two features now
+depend on it: invitations, and "forgot password".
+
+**And the invite link itself was a trap.** A Supabase invite establishes a REAL session
+for an account with **no password set**. The app treated it as an ordinary sign-in, so
+an invitee would land in Meridian, look around, close the tab — and never get back in,
+because the primary sign-in path is a password nobody asked them to choose. The failure
+happens *after* they are let in and is indistinguishable from success until their second
+visit. Same shape as §11d and §11f: the output looks entirely healthy.
+
+The fix reads `type` from the URL fragment rather than waiting for an auth *event* —
+which event Supabase fires for an invite is not something its documentation states, and
+a fix built on an untestable guess is not a fix. `invite`, `signup` and `recovery` all
+force the set-password screen before anything else renders.
+
+**What was built instead of email.**
+
+- `invite_users.mjs` creates accounts through the Admin API with the password already
+  set and the address already confirmed. No mail server is involved at any point.
+- **A change-password control inside the app**, because an invited user arrives with a
+  password somebody else chose and "forgot password" cannot help them — it sends a link
+  this project cannot deliver. `updateUser` on a live session needs no inbox.
+- The maintenance workflow gained an `invite` task, so accounts can be created from a
+  phone.
+
+**The public-repository constraint, and the guard it forced.** This repository is
+public, so its Actions logs are world-readable. A script that generates passwords and
+prints them is fine in a terminal and catastrophic in a public run log. `invite_users.mjs`
+refuses to generate inside Actions unless `INVITE_PASSWORD` is supplied as a repository
+secret — Actions masks secrets, and the owner already knows the value, so nothing needs
+reading back out. One shared password per batch is a real weakness, accepted knowingly:
+the alternative on a public repository is publishing distinct live credentials, and the
+app can now change it from inside in two clicks.
+
+**A check that passed for the wrong reason, caught by writing it twice.** The invite
+checks drive the real URL fragment rather than a fixture hook, because mocking the event
+would assert the guess rather than the behaviour. The first version navigated with
+`page.goto()` changing only the fragment — a same-document navigation, so React never
+remounted, the state initialisers never re-ran, and the page kept what the *previous*
+check had left on screen. Its "an invite does not open the screens" assertion passed
+because the recovery check before it had already opened the set-password screen. It
+reloads now; reverting the fix fails both invite checks, and that assertion flips to
+true — the trap, reproduced.
+
+Browser checks: 29 → 36.
+
+---
+
 ## 12. Source of Truth for Code
 
 `meridian.jsx` in this repository is the current, authoritative application source —

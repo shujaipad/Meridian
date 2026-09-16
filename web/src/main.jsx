@@ -31,19 +31,85 @@ const Centered = ({ children }) => (
 // The prototype's App renders its own upload controls and a "sign out" has nowhere
 // to live inside it, so the shell owns the session and puts the control in a fixed
 // corner rather than reaching into App's header.
-function SignOut() {
+const headerButton = {
+  background: "transparent", border: "1px solid #252B36", borderRadius: 6,
+  color: C.dim, fontSize: 11, padding: "5px 10px", cursor: "pointer",
+  fontFamily: "'IBM Plex Mono', monospace",
+};
+
+// CHANGING A PASSWORD FROM INSIDE THE APP NEEDS NO MAIL SERVER, which is the whole
+// reason it exists. "Forgot password" sends a recovery link, and this project has no
+// way to deliver one to anybody but its owner: Supabase's built-in email refuses
+// addresses outside the project's team, and a custom SMTP sender needs the domain that
+// has not been bought yet (§8).
+//
+// So an invited user arrives with a password somebody else generated and, until now,
+// no way to replace it. updateUser on a live session is a plain authenticated call —
+// no link, no inbox, no round trip.
+function AccountControls() {
+  const [open, setOpen] = useState(false);
+  const [password, setPassword] = useState("");
+  const [state, setState] = useState({ status: "idle" });
+  const tooShort = password.length > 0 && password.length < 6;
+
+  async function save(e) {
+    e.preventDefault();
+    if (password.length < 6) return;
+    setState({ status: "working" });
+    const { error } = await supabase.auth.updateUser({ password });
+    if (error) { setState({ status: "error", message: error.message }); return; }
+    setState({ status: "done" });
+    setPassword("");
+    setTimeout(() => { setOpen(false); setState({ status: "idle" }); }, 1600);
+  }
+
   return (
-    <button
-      onClick={() => supabase.auth.signOut()}
-      style={{
-        position: "fixed", top: 18, right: 18, zIndex: 50,
-        background: "transparent", border: "1px solid #252B36", borderRadius: 6,
-        color: C.dim, fontSize: 11, padding: "5px 10px", cursor: "pointer",
-        fontFamily: "'IBM Plex Mono', monospace",
-      }}
-    >sign out</button>
+    <div style={{ position: "fixed", top: 18, right: 18, zIndex: 50, textAlign: "right" }}>
+      <button style={{ ...headerButton, marginRight: 8 }} onClick={() => setOpen((v) => !v)}>
+        change password
+      </button>
+      <button style={headerButton} onClick={() => supabase.auth.signOut()}>sign out</button>
+      {open && (
+        <form onSubmit={save} style={{
+          marginTop: 8, padding: 12, width: 260, textAlign: "left",
+          background: "#161A21", border: "1px solid #252B36", borderRadius: 8,
+        }}>
+          <label htmlFor="change-password" style={{ display: "block", fontSize: 12, color: C.dim, marginBottom: 6 }}>
+            New password
+          </label>
+          <input
+            id="change-password" type="password" value={password} autoFocus
+            autoComplete="new-password" onChange={(e) => setPassword(e.target.value)}
+            style={{
+              width: "100%", boxSizing: "border-box", padding: "8px 10px", fontSize: 13,
+              background: "#0F1115", border: "1px solid #252B36", borderRadius: 6,
+              color: C.text, fontFamily: "inherit",
+            }}
+          />
+          <div style={{ fontSize: 11.5, color: tooShort ? C.loss : C.dim, margin: "8px 0 10px" }}>
+            At least 6 characters.
+          </div>
+          {state.status === "error" && (
+            <div style={{ fontSize: 11.5, color: C.loss, marginBottom: 10 }}>{state.message}</div>
+          )}
+          {state.status === "done" ? (
+            <div style={{ fontSize: 12, color: C.gold }}>Password changed.</div>
+          ) : (
+            <button type="submit" disabled={password.length < 6 || state.status === "working"}
+              style={{
+                ...headerButton, width: "100%", padding: "7px 10px",
+                color: password.length < 6 ? C.dim : C.text,
+                cursor: password.length < 6 ? "default" : "pointer",
+              }}
+            >{state.status === "working" ? "Saving…" : "Save"}</button>
+          )}
+        </form>
+      )}
+    </div>
   );
 }
+
+const SignOut = AccountControls;
 
 // Supabase returns auth failures in the URL FRAGMENT, not the query string, so the
 // server never sees them and nothing surfaces them unless the app looks. An expired
