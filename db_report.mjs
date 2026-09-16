@@ -60,8 +60,9 @@ for (const t of TABLES) {
 // check that would have shown five crypto instruments frozen years in the past.
 console.log("\n  freshness");
 try {
-  const universe = await readAll(db, "universe", "id,asset_class,symbol");
-  const tech = await readAll(db, "technicals_daily", "universe_id,as_of_date");
+  const universe = await readAll(db, "universe", "id,asset_class,symbol", { orderBy: ["id"] });
+  const tech = await readAll(db, "technicals_daily", "universe_id,as_of_date",
+                             { orderBy: ["universe_id"] });
   const classOf = Object.fromEntries(universe.map((u) => [String(u.id), u.asset_class]));
   const byClass = {};
   for (const t of tech) {

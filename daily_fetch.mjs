@@ -20,7 +20,11 @@
  * downstream complains.
  *
  *   1. EXPLICIT EVENTS — ?events=div,splits returns dated dividend and split records.
- *      Tells us WHY history moved.
+ *      Tells us WHY history moved. Only events dated after our newest stored bar
+ *      count: the range is a month, an ordinary month holds ~335 ex-dividend dates
+ *      across this universe, and an adjustment made before our newest bar was
+ *      already in the fetch that produced it. Counting all of them made this a
+ *      calendar rather than a detector.
  *   2. OVERLAP COMPARISON — stored adjusted close vs freshly fetched, on the ~21
  *      dates we already hold. Tells us WHETHER it moved, whatever the cause: a late
  *      or incomplete event record, an event during an outage, or Yahoo silently
@@ -28,6 +32,9 @@
  *      to a one-year-old bar runs median 0.29%, p90 2.06%, max 3.68% — a step
  *      discontinuity that compounds, and directional, since MA200 averages old
  *      unrestated bars while price is current.
+ *
+ * Both live in meridian-detect.js, where they can be tested without a network. What
+ * they cost when they are wrong is not theoretical: see §11c.
  *
  * A FAILURE MUST NEVER ADVANCE THE WATERMARK. "No new data" (holiday, halted scrip)
  * and "fetch failed" are different outcomes and do not share a code path. Conflating
@@ -39,7 +46,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { r4, readAll, readCSV, sleep, withRetry } from "./meridian-io.js";
+import { deepRepullCap, exchangeDateFormatter, medianNewestStored, restatementOf,
+         tradingArrearsSince, unabsorbedEventDate } from "./meridian-detect.js";
+import { DEFAULT_RETENTION_DAYS, r4, readAll, readCSV, sleep, withRetry } from "./meridian-io.js";
 
 const BASE = dirname(fileURLToPath(import.meta.url));
 const CHART = "https://query1.finance.yahoo.com/v8/finance/chart/";
@@ -57,9 +66,9 @@ const REQUEST_TIMEOUT_MS = 20_000;
 const SWEEP_BUDGET_MS = 75 * 60_000;
 const SWEEP_RANGE = "1mo";
 const DEEP_RANGE = "5y";
-// Relative, not absolute: a fixed epsilon means something quite different for a ₹12
-// scrip than a ₹90,000 one, and the universe spans ₹0.11 to ₹162,005.
-const RESTATEMENT_EPSILON = 1e-6;
+// Shared with prune_prices.mjs. A deep re-pull that wrote beyond it would only be
+// writing rows the same night's prune then deletes.
+const RETENTION_DAYS = DEFAULT_RETENTION_DAYS;
 
 const DRY = process.argv.includes("--dry-run");
 const LIMIT = process.argv.includes("--limit")
@@ -122,10 +131,7 @@ async function chart(ticker, range, withEvents) {
 // A bar's date is its exchange's LOCAL date, not UTC. Reading Yahoo's timestamps as
 // UTC put 125 ASX200 bars on Sundays and shifted every Asian index by a day (§3.2a).
 function barsOf(result) {
-  const tz = result?.meta?.exchangeTimezoneName || "UTC";
-  const fmt = new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
-  });
+  const fmt = exchangeDateFormatter(result);
   const ts = result.timestamp || [];
   const q = result.indicators?.quote?.[0] || {};
   const adj = result.indicators?.adjclose?.[0]?.adjclose;
@@ -146,12 +152,6 @@ function barsOf(result) {
   return out;
 }
 
-function eventsInWindow(result) {
-  const ev = result?.events || {};
-  const n = Object.values(ev.dividends || {}).length + Object.values(ev.splits || {}).length;
-  return n;
-}
-
 // ---------------------------------------------------------------- db
 
 
@@ -169,7 +169,7 @@ const t0 = Date.now();
 console.log(`daily fetch ${DRY ? "(DRY RUN — nothing is written)" : ""}`);
 
 const universe = await readAll(db, "universe", "id,asset_class,identifier,symbol",
-                               { filter: (q) => q.eq("status", "active") });
+                               { orderBy: ["id"], filter: (q) => q.eq("status", "active") });
 
 // WHAT TO ASK YAHOO FOR. `identifier` is a Yahoo ticker only for the 100 non-equity
 // instruments; for the 2,138 equities it is an ISIN, and Yahoo has never heard of an
@@ -224,7 +224,8 @@ console.log(`universe: ${targets.length} active instruments`);
 // 2,240 round trips; instead read the recent window for everything at once.
 const since = new Date(Date.now() - 45 * 86400_000).toISOString().slice(0, 10);
 const stored = await readAll(db, "prices_daily", "universe_id,trade_date,close",
-                             { filter: (q) => q.gte("trade_date", since) });
+                             { orderBy: ["universe_id", "trade_date"],
+                               filter: (q) => q.gte("trade_date", since) });
 const storedBy = {};
 for (const r of stored) (storedBy[r.universe_id] ||= {})[r.trade_date] = Number(r.close);
 console.log(`stored overlap window: ${stored.length.toLocaleString()} rows since ${since}`);
@@ -268,23 +269,24 @@ for (const [i, u] of targets.entries()) {
 
   const bars = barsOf(result);
   const have = storedBy[u.id] || {};
+  const storedDates = Object.keys(have);
+  const newestStored = storedDates.length ? storedDates.reduce((a, b) => (b > a ? b : a)) : null;
   let reason = null;
 
-  if (eventsInWindow(result) > 0) reason = "corporate action reported";
-  if (!reason) {
-    for (const b of bars) {
-      const prev = have[b.date];
-      if (prev == null) continue;                       // new bar, not an overlap
-      const rel = Math.abs(b.close - prev) / Math.max(Math.abs(prev), 1e-9);
-      if (rel > RESTATEMENT_EPSILON) {
-        reason = `restated ${b.date}: ${prev} -> ${b.close}`;
-        break;
-      }
+  if (!newestStored && bars.length) {
+    // An outage longer than the sweep window leaves a hole the sweep cannot bridge,
+    // so that instrument escalates rather than being appended across a gap. Checked
+    // FIRST: with nothing stored there is no overlap to compare and no baseline to
+    // date an event against, so neither detector below can say anything true.
+    reason = "no recent stored history";
+  } else {
+    const evDate = unabsorbedEventDate(result, newestStored);
+    if (evDate) reason = `corporate action ${evDate}, after newest stored ${newestStored}`;
+    if (!reason) {
+      const r = restatementOf(bars, have, r4);
+      if (r) reason = `restated ${r.date}: ${r.was} -> ${r.now}`;
     }
   }
-  // An outage longer than the sweep window leaves a hole the sweep cannot bridge, so
-  // that instrument escalates rather than being appended across a gap.
-  if (!reason && Object.keys(have).length === 0 && bars.length) reason = "no recent stored history";
 
   if (reason) {
     flagged.push({ ...u, reason });
@@ -327,35 +329,62 @@ for (const f of flagged) console.log(`  flagged ${f.symbol}: ${f.reason}`);
 // re-pull is that the stored series is known-wrong, and merging would preserve the
 // very rows being corrected.
 //
-// Capped, for the same reason as the guard above. A real trading day produces a
-// handful of splits and bonuses across 2,240 instruments; a hundred means the
-// detector is responding to something systemic -- a feed change, an adjustment
-// applied wholesale, a partial load -- and re-pulling five years for each would take
-// hours and could double the database. Refuse and report, rather than act on a
-// signal this size.
-const MAX_DEEP_REPULLS = 150;
+// Capped, for the same reason as the guard above -- but as a RATE, not a count. The
+// flat 150 quietly assumed the job ran last night; see deepRepullCap.
+const medianNewest = medianNewestStored(storedBy);
+const tradingArrears = tradingArrearsSince(medianNewest);
+const MAX_DEEP_REPULLS = deepRepullCap(tradingArrears);
+console.log(`median newest stored bar ${medianNewest ?? "none"}`
+          + ` — ${tradingArrears} trading day(s) of arrears, re-pull cap ${MAX_DEEP_REPULLS}`);
+
 if (flagged.length > MAX_DEEP_REPULLS) {
   console.error(`\n${flagged.length} instruments flagged for a deep re-pull, over the cap of ${MAX_DEEP_REPULLS}.`);
-  console.error("A normal day flags a handful. This many means something systemic --");
-  console.error("a feed change, a wholesale re-adjustment, or a partial load -- and");
-  console.error("re-pulling five years each could take hours and refill the database.");
+  console.error(`That cap already allows for ${tradingArrears} trading day(s) of arrears.`);
+  console.error("This many means something systemic -- a feed change, a wholesale");
+  console.error("re-adjustment, or a partial load -- and re-pulling each of them");
+  console.error("would take hours and churn the database.");
+  console.error("\nBy reason:");
+  const byReason = {};
+  for (const f of flagged) {
+    const k = f.reason.replace(/(restated|corporate action) .*/, "$1");
+    byReason[k] = (byReason[k] || 0) + 1;
+  }
+  Object.entries(byReason).sort((a, b) => b[1] - a[1])
+    .forEach(([k, n]) => console.error(`  ${String(n).padStart(5)}  ${k}`));
   console.error("\nFirst few:");
   flagged.slice(0, 10).forEach((f) => console.error(`  ${f.symbol}: ${f.reason}`));
   console.error("\nNo watermark moved; nothing is lost. Investigate before re-running.");
   process.exit(1);
 }
 
+// Yahoo's smallest range that covers the 1,100-day retention window is 5y, so a deep
+// re-pull arrives with ~700 bars nobody keeps. Writing them and letting prune_prices
+// delete them an hour later is not free: on a 500MB ceiling the dead tuples are the
+// cost, and dead tuples from an upsert reload are what filled this database on the
+// 10th. Trim to the window we actually retain.
+const retentionCutoff = new Date(Date.now() - RETENTION_DAYS * 86400_000).toISOString().slice(0, 10);
+
 for (const u of flagged) {
   try {
-    const bars = barsOf(await chart(yahooTickerFor(u), DEEP_RANGE, false));
-    if (!bars.length) { failures.push({ symbol: u.symbol, error: "deep re-pull returned no bars" }); continue; }
+    const all = barsOf(await chart(yahooTickerFor(u), DEEP_RANGE, false));
+    if (!all.length) { failures.push({ symbol: u.symbol, error: "deep re-pull returned no bars" }); continue; }
+    const bars = all.filter((b) => b.date >= retentionCutoff);
+    // Bars, but none of them recent: a scrip that stopped trading years ago. Not a
+    // failure -- the fetch worked and told us the truth -- and emphatically not a
+    // delete, which would drop the only copy of its history for the sake of writing
+    // nothing back. Leave it and say so; §9 item 3a owns deactivating these.
+    if (!bars.length) {
+      console.log(`  skipped ${u.symbol}: ${all.length} bars, none inside the ${RETENTION_DAYS}-day window`);
+      await sleep(PAUSE_MS);
+      continue;
+    }
     if (!DRY) {
       const { error } = await db.from("prices_daily").delete().eq("universe_id", u.id);
       if (error) throw new Error(error.message);
     }
     await upsertPrices(bars.map((b) => ({ universe_id: u.id, trade_date: b.date,
       high: b.high, low: b.low, close: b.close, volume: b.volume })), u.symbol);
-    console.log(`  re-pulled ${u.symbol}: ${bars.length} bars`);
+    console.log(`  re-pulled ${u.symbol}: ${bars.length} bars (of ${all.length} fetched)`);
   } catch (e) {
     failures.push({ symbol: u.symbol, error: `deep re-pull: ${String(e).slice(0, 120)}` });
   }

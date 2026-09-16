@@ -18,10 +18,26 @@ import { supabase } from "./supabase.js";
 // drop half the universe — the same trap the loader and the compute step both had
 // to handle, and the reason this is a shared helper rather than three ad-hoc loops.
 const PAGE = 1000;
-async function readAll(table, columns) {
+
+// AND EVERY PAGED READ NEEDS A TOTAL ORDER. `range()` is LIMIT/OFFSET, and SQL
+// without ORDER BY makes no promise about which rows those are: Postgres ships with
+// synchronize_seqscans on, so one scan joins another already in flight and starts
+// wherever it has reached. Three pages of technicals_daily are three separate
+// queries, each free to begin somewhere else.
+//
+// It is the row COUNT that survives -- offsets 0..N always walk N rows -- so nothing
+// here would have complained. The SET is what breaks: some instruments arrive twice
+// and others never arrive, and the screens render beautifully with a slice of the
+// universe missing. The daily fetch hit exactly this on 2026-09-14/15 and read the
+// same unchanged table as 1,067 instruments one night and 1,553 the next.
+//
+// The order column must be unique per row, or ties across a page boundary are the
+// same bug again.
+async function readAll(table, columns, orderBy) {
   const out = [];
   for (let from = 0; ; from += PAGE) {
-    const { data, error } = await supabase.from(table).select(columns).range(from, from + PAGE - 1);
+    const { data, error } = await supabase.from(table).select(columns)
+      .order(orderBy).range(from, from + PAGE - 1);
     if (error) throw new Error(`${table}: ${error.message}`);
     out.push(...data);
     if (data.length < PAGE) return out;
@@ -45,12 +61,12 @@ const key = (v) => (v === null || v === undefined ? null : String(v));
 
 export async function loadScreens() {
   const [universe, technicals, scored, candidates, sectoral, breadth] = await Promise.all([
-    readAll("universe", "id,asset_class,identifier,symbol,name,sector,industry_group,market_cap"),
-    readAll("technicals_daily", "*"),
-    readAll("fundamentals_scored", "*"),
-    readAll("golden_breakout_candidates", "*"),
-    readAll("sectoral_technicals_daily", "*"),
-    readAll("market_breadth_daily", "*"),
+    readAll("universe", "id,asset_class,identifier,symbol,name,sector,industry_group,market_cap", "id"),
+    readAll("technicals_daily", "*", "universe_id"),
+    readAll("fundamentals_scored", "*", "universe_id"),
+    readAll("golden_breakout_candidates", "*", "universe_id"),
+    readAll("sectoral_technicals_daily", "*", "industry_group"),
+    readAll("market_breadth_daily", "*", "trade_date"),
   ]);
 
   // Split by asset class BEFORE anything else. The equity screens must never see the

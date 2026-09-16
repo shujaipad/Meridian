@@ -22,11 +22,13 @@
  * Usage:  node prune_prices.mjs [--days N] [--dry-run]
  */
 
+import { DEFAULT_RETENTION_DAYS } from "./meridian-io.js";
+
 // Arguments are validated BEFORE anything needs credentials or a network. A bad
 // --days should say so, not fail three layers down in a module import.
 const DRY = process.argv.includes("--dry-run");
 const dIdx = process.argv.indexOf("--days");
-const RETENTION_DAYS = dIdx >= 0 ? Number(process.argv[dIdx + 1]) : 1100;   // ~3 years
+const RETENTION_DAYS = dIdx >= 0 ? Number(process.argv[dIdx + 1]) : DEFAULT_RETENTION_DAYS;
 
 // A floor, not a suggestion. compute_and_publish reads DB_WINDOW_DAYS = 800; pruning
 // below that would silently starve the model -- MA200, the 252-day RS lookback and the

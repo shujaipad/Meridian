@@ -160,7 +160,7 @@ if (DRY) {
   }
 } else
 await readAll(db, "universe", "id,identifier",
-  { onPage: (rows) => rows.forEach((r) => { ids[r.identifier] = r.id; }) });
+  { orderBy: ["id"], onPage: (rows) => rows.forEach((r) => { ids[r.identifier] = r.id; }) });
 console.log(`  universe id map: ${Object.keys(ids).length} instruments`);
 
 // --from-db: pull the trailing window for EQUITIES here. The non-equity classes read
@@ -170,6 +170,7 @@ if (FROM_DB) {
   const cutoff = new Date(Date.now() - DB_WINDOW_DAYS * 86400_000).toISOString().slice(0, 10);
   const isinById = {};
   await readAll(db, "universe", "id,identifier", {
+    orderBy: ["id"],
     filter: (q) => q.eq("asset_class", "equity"),
     onPage: (rows) => rows.forEach((r) => { isinById[r.id] = r.identifier; }),
   });
@@ -180,8 +181,8 @@ if (FROM_DB) {
   // readAllChunked. A flat offset walk over 2.1M rows dies on the statement timeout
   // around page 800, because each page re-scans everything before it.
   await readAllChunked(db, "prices_daily", "universe_id,trade_date,high,low,close,volume", {
-    idColumn: "universe_id", ids: equityIds,
-    filter: (q) => q.gte("trade_date", cutoff).order("universe_id").order("trade_date"),
+    idColumn: "universe_id", ids: equityIds, orderBy: ["universe_id", "trade_date"],
+    filter: (q) => q.gte("trade_date", cutoff),
     onPage: (data) => {
       for (const r of data) {
         const isin = isinById[r.universe_id];
@@ -330,14 +331,15 @@ for (const c of ASSET_CLASSES) {
     const cutoff = new Date(Date.now() - DB_WINDOW_DAYS * 86400_000).toISOString().slice(0, 10);
     const symById = {};
     await readAll(db, "universe", "id,symbol", {
+      orderBy: ["id"],
       filter: (q) => q.eq("asset_class", c.assetClass),
       onPage: (rows) => rows.forEach((r) => { symById[r.id] = r.symbol; }),
     });
     const memberIds = new Set(Object.keys(symById).map(Number));
     rows = [];
     await readAllChunked(db, "prices_daily", "universe_id,trade_date,high,low,close,volume", {
-      idColumn: "universe_id", ids: memberIds,
-      filter: (q) => q.gte("trade_date", cutoff).order("universe_id").order("trade_date"),
+      idColumn: "universe_id", ids: memberIds, orderBy: ["universe_id", "trade_date"],
+      filter: (q) => q.gte("trade_date", cutoff),
       onPage: (data) => {
         for (const r of data) {
           rows.push({ ISIN: symById[r.universe_id], Date: r.trade_date,

@@ -76,6 +76,12 @@ jobs:
 
       - run: npm install --no-save @supabase/supabase-js
 
+      # Seconds, no network, no database -- and it runs FIRST, because both defects
+      # it covers were the kind that waste the whole night before saying anything.
+      # The 2026-09-15 run spent twenty minutes fetching prices it then threw away.
+      - name: Pipeline self-checks
+        run: node check_pipeline.mjs
+
       # Sweep every instrument at 1mo, deep re-pull only what actually moved.
       # A failed instrument exits non-zero and does NOT advance its watermark, so
       # tomorrow's sweep retries it with no manual intervention.

@@ -2418,6 +2418,10 @@ columns elsewhere, and the test fixture's `select` was a second implementation o
 PostgREST's that did not project columns. §7.2 rejects duplicate implementations of the
 model; the same reasoning applies to a CSV parser and a paging loop.
 
+`readAll` **requires** an `orderBy`, for reasons §11c records at length: a paged read
+without a total order returns the right number of rows and the wrong ones, and no row
+count will show it.
+
 `readAll` takes an optional `onPage` callback so reads that fold into something smaller
 stay streaming — the 800-day `prices_daily` window is over two million rows, and
 materialising it before reducing it would hold both at once for nothing.
@@ -2429,7 +2433,80 @@ of which 2,140,491 equity; fundamentals 6,477).
 
 `web/src/loadScreens.js` deliberately keeps its own `readAll`: it runs in the browser
 against the anon-key client, and importing a Node module into the bundle to save nine
-lines would be the wrong trade.
+lines would be the wrong trade. The cost of that choice is real and was paid — it
+carried the missing-`ORDER BY` defect independently and had to be fixed twice — so the
+fixture now refuses an unordered paged read, which is what makes `npm run check` catch a
+regression in the copy rather than only in the original.
+
+---
+
+## 11c. The nightly job's first four runs — three defects, and what they had in common
+*(2026-09-16)*
+
+The nightly pipeline was scheduled on 2026-09-11 and failed on every run before this
+change. Three different causes, and none of them announced itself:
+
+| # | Date | Ran for | Cause |
+|---|------|---------|-------|
+| 1 | 09-11 | 80 min | Equities fetched by ISIN. Yahoo has never heard of an ISIN, so every one 404'd and retried. Fixed 09-11 (`meridian-yahoo-tickers.csv`). |
+| 2 | 09-14 | 64 s | The "half-loaded table" guard fired: it saw 1,067 of 2,238 instruments with stored history. |
+| 3 | 09-15 | 21 min | 1,009 instruments flagged for a deep re-pull, over the cap of 150. |
+
+Runs 2 and 3 were the same code against the same unchanged data, one night apart, and
+they disagreed about how much of the database existed. That disagreement is the finding.
+
+**DEFECT 1 — paged reads without a total order.** `readAll` walked `range(from, from+999)`
+with no `ORDER BY`. SQL makes no promise about which rows those are, and Postgres
+genuinely varies it: `synchronize_seqscans` is on by default, so a sequential scan joins
+one already in flight and starts wherever that one has reached. Fifty-five pages are
+fifty-five separate queries, each free to begin somewhere else.
+
+What makes this nearly undetectable is that **the row count stays exactly right**.
+Offsets 0..N return N rows however the scan is ordered. The 09-15 read returned 54,817
+rows — to the row, the number of bars the committed CSVs hold since 2026-08-01 — while
+covering 1,553 of 2,189 instruments, roughly 40% of it duplicates. Every length check,
+every "read N rows" log line and every row-count assertion passed. The daily fetch
+concluded that 637 instruments, TCS and ITC and BHARTIARTL among them, had no recent
+history and each needed five years refetched.
+
+`orderBy` is now required by `readAll` and `readAllChunked`, and must be unique per row;
+the web app's own paged reads take an order too, and the test fixture refuses a
+multi-page read that has none. **The rule: a check that only counts rows cannot see
+this class of bug at all.**
+
+**DEFECT 2 — the corporate-action detector was a calendar.** It flagged any dividend or
+split anywhere in the one-month sweep window. Across 2,238 instruments an ordinary month
+holds ~335 ex-dividend dates, so it flagged 335 instruments on a quiet Tuesday — by
+itself more than twice the re-pull cap. A dividend applied before our newest stored bar
+was already in the fetch that produced that bar. Only an event dated *after* it can have
+restated history we hold, and that is now the test.
+
+**DEFECT 3 — the restatement epsilon was below the storage precision.** Everything the
+pipeline writes goes through `r4`; the original five-year load did not, so a handful of
+instruments still hold values like `0.330915`. Against a relative epsilon of 1e-6 the
+rounding alone reads as a restatement — 4.5e-5, forty-five times the threshold, for two
+numbers that are the same number. Those instruments would have been re-pulled nightly
+forever. The stored value is now rounded the same way the fetched one was before they
+are compared, which removes the class exactly rather than hiding it under a looser
+epsilon.
+
+**And one thing that was right.** The cap refused to act on 1,009 flags, which is why
+the database was never refilled and no history was overwritten from a bad signal. But it
+was a flat count, and a flat count assumes the job ran last night: eleven nights of
+arrears carry eleven nights of ordinary corporate actions, and the cap would have
+refused the catch-up forever — the guard becoming the reason the pipeline stayed broken
+while looking like the reason it was safe. It is now an allowance per trading day of
+arrears (40/day, floor 150, ceiling 400), which still refuses 1,009 without hesitating.
+Deep re-pulls are also trimmed to the retention window, since Yahoo's smallest range
+covering 1,100 days is `5y` and the ~700 surplus bars were being written only for that
+night's prune to delete them — dead tuples being exactly what filled this database on
+2026-09-10 (§11b).
+
+**`check_pipeline.mjs`** covers all of it without a network or a database, and runs as
+the *first* step of the nightly job: both defects it guards wasted the whole night
+before saying anything. Its paging checks run against a fake database that reproduces
+the synchronised-seqscan behaviour, and each check was negative-tested by reverting the
+fix it covers.
 
 ---
 

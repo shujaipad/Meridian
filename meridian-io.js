@@ -56,26 +56,72 @@ export const r2 = (v) => (v == null || Number.isNaN(v) ? null : Math.round(v * 1
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ---------------------------------------------------------------- retention
+/**
+ * How much price history the database keeps. Shared rather than written twice: the
+ * nightly prune deletes past this line and a deep re-pull must not write past it,
+ * and two copies of the number drift the moment one of them is tuned. ~3 years,
+ * deliberately well clear of compute's 800-day read window (see prune_prices.mjs).
+ */
+export const DEFAULT_RETENTION_DAYS = 1100;
+
 // ---------------------------------------------------------------- paged reads
 export const PAGE = 1000;
 
+export function requireOrderBy(table, orderBy) {
+  if (!Array.isArray(orderBy) || orderBy.length === 0) {
+    throw new Error(
+      `reading ${table}: orderBy is required. Paged reads without a total order return `
+      + "the right NUMBER of rows and the wrong ones -- duplicates for some keys, "
+      + "nothing for others -- and no row count will show it.");
+  }
+  return orderBy;
+}
+
 /**
- * Read every row of a table, one 1,000-row page at a time.
+ * ORDER IS NOT OPTIONAL, and this is the single most expensive thing this file knows.
  *
- * `filter` receives the query builder and returns it with .eq/.gte/.in/.order
- * applied, so callers keep their own predicates without re-implementing the loop.
+ * `range(from, to)` is LIMIT/OFFSET. SQL without ORDER BY makes no promise at all
+ * about which rows those are, and Postgres genuinely varies it between two identical
+ * queries: `synchronize_seqscans` is on by default, so a sequential scan joins an
+ * already-running one and starts wherever that one has reached, wrapping around at
+ * the end. Fifty-five pages of a fifty-five-thousand-row read are fifty-five separate
+ * queries, each free to begin at a different block.
+ *
+ * The failure that produces is almost undetectable by inspection. The row COUNT is
+ * always exactly right -- offsets 0..N walk N rows however the scan is ordered -- so
+ * every length check, every "did we get everything" log line, and every row-count
+ * assertion passes. What is wrong is the SET: some rows come back twice and the rows
+ * that would have taken their place never come back at all.
+ *
+ * Measured, in production, on the same data two nights running: of the 2,189
+ * instruments that hold recent bars, 2026-09-14's read found 1,067 and 2026-09-15's
+ * found 1,553. Nothing wrote to prices_daily in between. The 2026-09-15 read
+ * returned 54,817 rows, which is to the row the number of bars the committed CSVs
+ * hold since 2026-08-01 -- a complete count over an incomplete set, ~40% duplicates. The daily fetch concluded that 637
+ * instruments, TCS and ITC and BHARTIARTL among them, had no recent history and
+ * needed a five-year re-pull each; the deep-re-pull cap refused, and the job failed.
+ *
+ * So `orderBy` is required, and must be a key unique per row. Ordering by a
+ * non-unique column is the same bug wearing a hat: ties between pages are still
+ * unordered.
+ *
+ * `filter` receives the query builder and returns it with .eq/.gte/.in applied, so
+ * callers keep their own predicates without re-implementing the loop.
  *
  * `onPage`, when given, is handed each page and nothing is accumulated — for reads
  * whose result is folded into something smaller anyway (a price array keyed by ISIN,
  * an id map). The 800-day prices_daily window is over two million rows; materialising
  * it and then reducing it holds both at once for no reason.
  */
-export async function readAll(db, table, columns, { filter, onPage } = {}) {
+export async function readAll(db, table, columns, { orderBy, filter, onPage } = {}) {
+  requireOrderBy(table, orderBy);
   const out = onPage ? null : [];
   for (let from = 0; ; from += PAGE) {
-    let q = db.from(table).select(columns).range(from, from + PAGE - 1);
+    let q = db.from(table).select(columns);
+    for (const col of orderBy) q = q.order(col);
     if (filter) q = filter(q);
-    const { data, error } = await q;
+    const { data, error } = await q.range(from, from + PAGE - 1);
     if (error) throw new Error(`reading ${table}: ${error.message}`);
     if (onPage) onPage(data); else out.push(...data);
     if (data.length < PAGE) return out;
@@ -98,18 +144,23 @@ export async function readAll(db, table, columns, { filter, onPage } = {}) {
  * each one cheap and constant-cost.
  *
  * Row ORDER within an instrument is load-bearing -- computeTechnicalBlock walks the
- * bars as given -- so callers must keep their .order("trade_date"). Blocking by id
- * cannot disturb that: every row for an instrument falls in exactly one block.
+ * bars as given -- so `orderBy` must end in the date column. It is required here for
+ * the same reason as in readAll: a block of 25 instruments is still ~20,000 rows and
+ * still pages, and an unordered page boundary inside a block silently duplicates some
+ * bars and drops others. Blocking by id cannot disturb a correct order: every row for
+ * an instrument falls in exactly one block.
  */
-export async function readAllChunked(db, table, columns, { idColumn, ids, chunkSize = 25, filter, onPage } = {}) {
+export async function readAllChunked(db, table, columns, { idColumn, ids, orderBy, chunkSize = 25, filter, onPage } = {}) {
+  requireOrderBy(table, orderBy);
   const out = onPage ? null : [];
   const list = [...ids];
   for (let i = 0; i < list.length; i += chunkSize) {
     const block = list.slice(i, i + chunkSize);
     for (let from = 0; ; from += PAGE) {
-      let q = db.from(table).select(columns).in(idColumn, block).range(from, from + PAGE - 1);
+      let q = db.from(table).select(columns).in(idColumn, block);
+      for (const col of orderBy) q = q.order(col);
       if (filter) q = filter(q);
-      const { data, error } = await q;
+      const { data, error } = await q.range(from, from + PAGE - 1);
       if (error) throw new Error(`reading ${table}: ${error.message}`);
       if (onPage) onPage(data); else out.push(...data);
       if (data.length < PAGE) break;

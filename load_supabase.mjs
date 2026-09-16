@@ -265,7 +265,7 @@ async function idByIsin() {
   }
   const map = {};
   await readAll(db, "universe", "id,identifier",
-    { onPage: (rows) => rows.forEach((r) => { map[r.identifier] = r.id; }) });
+    { orderBy: ["id"], onPage: (rows) => rows.forEach((r) => { map[r.identifier] = r.id; }) });
   return map;
 }
 

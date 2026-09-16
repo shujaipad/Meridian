@@ -61,8 +61,32 @@ export const supabase = {
         this._columns = columns;
         return this;
       },
+      // The fixture sorts, and refuses to page without being told how. PostgREST's
+      // `range` is LIMIT/OFFSET: unordered, the database is free to return different
+      // rows for the same offsets on two identical queries, and does -- Postgres
+      // joins an in-flight sequential scan wherever it has reached. The row count
+      // stays exactly right while the row set duplicates some keys and loses others,
+      // which is why nothing caught it in production for four days. An array slice
+      // can never reproduce that, so the fixture refuses the shape instead: a read
+      // that spans more than one page without an order is the bug, ordered or not.
+      order(column) {
+        this._order = column;
+        return this;
+      },
       async range(from, to) {
-        const page = rows.slice(from, to + 1);
+        if (!this._order && to + 1 < rows.length) {
+          return { data: null, error: { message:
+            `paged read of ${table} without .order() -- LIMIT/OFFSET has no defined `
+            + "order, so pages overlap and rows go missing while the count stays right" } };
+        }
+        const ordered = this._order
+          ? [...rows].sort((a, b) => {
+              const x = a[this._order], y = b[this._order];
+              if (x === y) return 0;
+              return x < y ? -1 : 1;
+            })
+          : rows;
+        const page = ordered.slice(from, to + 1);
         const cols = this._columns;
         if (!cols || cols.trim() === "*") return { data: page, error: null };
         const wanted = cols.split(",").map((c) => c.trim()).filter(Boolean);

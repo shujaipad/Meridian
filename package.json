@@ -5,6 +5,7 @@
   "description": "Meridian data pipeline — loaders, the compute step, and the daily job. The web app lives in web/.",
   "type": "module",
   "scripts": {
+    "check": "node check_pipeline.mjs",
     "load": "node --max-old-space-size=4096 load_supabase.mjs",
     "compute": "node --max-old-space-size=6144 compute_and_publish.mjs",
     "daily": "node --max-old-space-size=4096 daily_fetch.mjs",
