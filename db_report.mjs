@@ -18,11 +18,14 @@
  */
 import { collectHealth, EGRESS_LIMIT_MB, egressPerMonthMb, evaluateHealth, mbPerYear,
          RUNS_PER_MONTH, usedMbOf } from "./meridian-health.js";
-import { connect, meterLine } from "./meridian-io.js";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { connect, egressSuffix, meterLine, meterTotalBytes, readEgress } from "./meridian-io.js";
 
 const db = await connect();
 
 // Supabase's Free plan quota. The number that was written down and never checked.
+const BASE = dirname(fileURLToPath(import.meta.url));
 const LIMIT_MB = Number(process.env.DB_LIMIT_MB ?? 500);
 const WARN_AT = Number(process.env.DB_WARN_PCT ?? 80);
 
@@ -105,7 +108,37 @@ if (facts.dupes.length) {
 
 // Egress: the last quota that had a number in prose and no gauge (§6.5). Measured
 // from what the runs actually transferred, not estimated from row counts.
-console.log("\n  egress");
+//
+// THIS STEP RUNS LAST, which is why the pipeline total is written here. Every step
+// appends its meter to a workspace file as it finishes; this one sums them, adds its
+// own, and persists the figure so the watchdog and tomorrow's report can see it. The
+// first metered run tagged only the fetch and therefore reported 2% of the allowance
+// against a real 118% -- a gauge reading the wrong instrument.
+const steps = readEgress(BASE);
+if (steps.length) {
+  console.log("\n  this run");
+  for (const st of steps) {
+    console.log(`    ${st.step.padEnd(10)} ${(st.bytes / 1048576).toFixed(1).padStart(7)} MB down`
+              + ` in ${st.requests.toLocaleString()} requests`);
+  }
+  const total = steps.reduce((a, st) => a + st.bytes, 0) + meterTotalBytes(db.meter);
+  console.log(`    ${"TOTAL".padEnd(10)} ${(total / 1048576).toFixed(1).padStart(7)} MB`);
+  const perMonth = egressPerMonthMb(total);
+  console.log(`    ~${(perMonth / 1024).toFixed(2)} GB/month of ${(EGRESS_LIMIT_MB / 1024).toFixed(0)} GB`
+            + ` — ${((perMonth / EGRESS_LIMIT_MB) * 100).toFixed(0)}%`);
+  // Persisted as its own job-log row. daily_fetch's row describes one step and is
+  // deliberately untagged; this one describes the night.
+  const { error: logErr } = await db.from("fetch_job_log").insert({
+    job_type: "daily", status: "success",
+    message: `pipeline ${steps.map((st) => st.step).join("+")} `
+           + `${egressSuffix({ ...db.meter, wireBytes: total, decodedBytes: 0,
+                               requests: steps.reduce((a, st) => a + st.requests, 0) + db.meter.requests })}`,
+    finished_at: new Date().toISOString(),
+  });
+  if (logErr) console.log(`    (could not record the total: ${logErr.message})`);
+}
+
+console.log("\n  egress, recent runs");
 const metered = facts.jobs.filter((j) => j.egress?.bytes > 0);
 if (!metered.length) {
   console.log("    not measured yet — runs before 2026-09-17 carry no egress tag");

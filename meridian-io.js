@@ -16,7 +16,7 @@
  * row 1,000 — the failure this codebase fears most, and there were seven separate
  * hand-written mitigations for it.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 // ---------------------------------------------------------------- CSV
 // Quote-aware, because the company master carries fields like
@@ -297,6 +297,37 @@ export function meterLine(m) {
  * measurement that exists this week and one that exists eventually. So it rides in
  * `message` as a structured suffix that both sides agree on and a check covers.
  */
+/**
+ * THE WHOLE PIPELINE, NOT ONE STEP OF IT. The first metered run reported 2% of the
+ * allowance and the truth was 118%: only daily_fetch wrote a tag, and daily_fetch is
+ * 5MB of a 275MB night. compute (139MB) and the workbook (131MB) were invisible to the
+ * gauge that existed to watch them -- a number that looks fine and measures the wrong
+ * thing, which is worse than no number, and is the same failure as a row count that is
+ * right while the rows are wrong (§11c).
+ *
+ * Each step appends its meter here as it finishes; the capacity check, which runs last,
+ * sums them and persists the total. A file rather than a table because these are
+ * separate processes in one job, and a workspace file is the only thing they share.
+ */
+export const EGRESS_FILE = ".meridian-egress.json";
+
+export function recordEgress(step, meter, dir = process.cwd()) {
+  const path = `${dir}/${EGRESS_FILE}`;
+  let all = [];
+  try { all = JSON.parse(readFileSync(path, "utf8")); } catch { all = []; }
+  if (!Array.isArray(all)) all = [];
+  all.push({ step, bytes: meterTotalBytes(meter), sent: meter.sentBytes, requests: meter.requests });
+  try { writeFileSync(path, JSON.stringify(all)); } catch { /* reporting must not fail a run */ }
+  return all;
+}
+
+export function readEgress(dir = process.cwd()) {
+  try {
+    const all = JSON.parse(readFileSync(`${dir}/${EGRESS_FILE}`, "utf8"));
+    return Array.isArray(all) ? all : [];
+  } catch { return []; }
+}
+
 export const EGRESS_TAG = /\| egress=(\d+) requests=(\d+)/;
 export const egressSuffix = (m) =>
   `| egress=${meterTotalBytes(m)} requests=${m.requests}`;
@@ -330,6 +361,60 @@ export function parseEgress(message) {
  * the caller's array leaves nothing to get wrong, and avoids holding two million-row
  * arrays at the same time.
  */
+/**
+ * The 800-day window, read ONCE per night.
+ *
+ * Measured on 2026-09-16: the compute step pulled 139MB and the workbook pulled 131MB,
+ * of a 275MB night against a 5GB monthly allowance — 118%, over the free tier, and
+ * almost all of it the same rows fetched twice because the two run as separate
+ * processes. Caching the first read to disk for the second halves the bill.
+ *
+ * It also makes the two agree by construction rather than by coincidence: §11d moved
+ * the workbook onto the database so it and the screens would stop differing by
+ * vintage, and this is the same argument one step further — now they cannot differ at
+ * all, because there is one read.
+ *
+ * The cache is only ever trusted when the database agrees it is current. That costs one
+ * request and a handful of bytes, and without it a stale cache would produce a workbook
+ * that is internally perfect and a day old — the exact failure §11d was about.
+ */
+export const PRICE_CACHE = ".meridian-prices-cache.csv";
+
+export function writePriceCache(rows, dir = process.cwd()) {
+  const out = ["ISIN,Date,High,Low,Close,Volume"];
+  for (const r of rows) out.push(`${r.ISIN},${r.Date},${r.High ?? ""},${r.Low ?? ""},${r.Close ?? ""},${r.Volume ?? ""}`);
+  writeFileSync(`${dir}/${PRICE_CACHE}`, out.join("\n"));
+  return rows.length;
+}
+
+/** Returns the cached rows, or null if there is no cache or it is not current. */
+export function readPriceCache(newestExpected, dir = process.cwd()) {
+  let text;
+  try { text = readFileSync(`${dir}/${PRICE_CACHE}`, "utf8"); } catch { return null; }
+  const lines = text.split("\n");
+  if (lines.length < 2) return null;
+  const rows = [];
+  let newest = "";
+  for (let i = 1; i < lines.length; i++) {
+    const l = lines[i];
+    if (!l) continue;
+    const f = l.split(",");
+    if (f[1] > newest) newest = f[1];
+    rows.push({ ISIN: f[0], Date: f[1], High: num(f[2]), Low: num(f[3]),
+                Close: num(f[4]), Volume: num(f[5]) });
+  }
+  if (newestExpected && newest !== newestExpected) return null;   // stale; go to the source
+  return rows;
+}
+
+/** The newest equity bar the database holds. One row, so the check costs nothing. */
+export async function newestEquityBar(db) {
+  const { data, error } = await db.from("prices_daily").select("trade_date")
+    .order("trade_date", { ascending: false }).limit(1);
+  if (error || !data?.length) return null;
+  return data[0].trade_date;
+}
+
 export async function readEquityPrices(db, { windowDays, into, onProgress } = {}) {
   const cutoff = new Date(Date.now() - windowDays * 86400_000).toISOString().slice(0, 10);
   const isinById = {};

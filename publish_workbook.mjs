@@ -18,7 +18,7 @@
  */
 
 import { readFileSync, statSync } from "node:fs";
-import { connect, meterLine } from "./meridian-io.js";
+import { connect, meterLine, recordEgress } from "./meridian-io.js";
 
 const BUCKET = "workbooks";
 const MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
@@ -89,4 +89,5 @@ if (stale.length) {
 } else {
   console.error(`  nothing older than ${cutoff} to prune`);
 }
+recordEgress("publish", supabase.meter);
 console.error(`supabase: ${meterLine(supabase.meter)}`);

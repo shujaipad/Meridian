@@ -22,7 +22,7 @@
  * Usage:  node prune_prices.mjs [--days N] [--dry-run]
  */
 
-import { connect, DEFAULT_RETENTION_DAYS, meterLine } from "./meridian-io.js";
+import { connect, DEFAULT_RETENTION_DAYS, meterLine, recordEgress } from "./meridian-io.js";
 
 // Arguments are validated BEFORE anything needs credentials or a network. A bad
 // --days should say so, not fail three layers down in a module import.
@@ -97,4 +97,5 @@ console.log(`  pruned ${removed} trading day(s); ${after?.toLocaleString() ?? "?
 // Autovacuum handles the reclaim; a nightly prune of one day never outruns it.
 console.log("  (space is reused in place; the file size stays flat rather than shrinking)");
 
+recordEgress("prune", db.meter);
 console.log(`supabase: ${meterLine(db.meter)}`);

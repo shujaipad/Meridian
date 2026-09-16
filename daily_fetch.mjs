@@ -48,8 +48,8 @@ import { fileURLToPath } from "node:url";
 
 import { arrearsInstrumentDays, deepRepullCap, exchangeDateFormatter, restatementOf,
          SETTLEMENT_DAYS, unabsorbedEventDate, unsettledFrom } from "./meridian-detect.js";
-import { connect, DEFAULT_RETENTION_DAYS, egressSuffix, meterLine, readAll, readCSV,
-         rPrice, sleep, withRetry } from "./meridian-io.js";
+import { connect, DEFAULT_RETENTION_DAYS, meterLine, readAll, readCSV,
+         recordEgress, rPrice, sleep, withRetry } from "./meridian-io.js";
 
 const BASE = dirname(fileURLToPath(import.meta.url));
 const CHART = "https://query1.finance.yahoo.com/v8/finance/chart/";
@@ -417,15 +417,17 @@ if (!DRY) {
   await db.from("fetch_job_log").insert({
     job_type: "daily",
     status: failures.length ? "failure" : "success",
-    // The egress suffix rides in `message` because fetch_job_log has no column for it
-    // and adding one needs a migration run by hand -- see egressSuffix. db_report and
-    // the watchdog parse it back out to project the monthly total.
+    // Deliberately UNTAGGED. This row describes one step, and this step is 5MB of a
+    // 275MB night; tagging it made the gauge read 2% of the allowance against a real
+    // 118%. The pipeline total is written by the capacity check, which runs last and
+    // can see every step's meter.
     message: `swept ${targets.length}, +${appended} bars, ${flagged.length} re-pulled, `
-           + `${failures.length} failed ${egressSuffix(db.meter)}`,
+           + `${failures.length} failed`,
     started_at: new Date(t0).toISOString(), finished_at: new Date().toISOString(),
   });
 }
 
+recordEgress("fetch", db.meter, BASE);
 console.log(`\n${((Date.now() - t0) / 60000).toFixed(1)} min — ${meterLine(db.meter)}`);
 if (failures.length) {
   console.error(`\n${failures.length} FAILURE(S):`);

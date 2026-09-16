@@ -44,7 +44,8 @@ import { fileURLToPath } from "node:url";
 
 import { SNAPSHOT_TABLES } from "./meridian-schema.js";
 import { connect, DEFAULT_DB_WINDOW_DAYS, meterLine, num, r2, r4, readAll,
-         readAllChunked, readCSV, readEquityPrices, rPrice, withRetry } from "./meridian-io.js";
+         PRICE_CACHE, readAllChunked, readCSV, readEquityPrices, recordEgress, rPrice,
+         withRetry, writePriceCache } from "./meridian-io.js";
 
 import {
   bandOfRSRating, closesByKeyFromPrices, computeAll, computeBreadthSeries,
@@ -179,6 +180,11 @@ if (FROM_DB) {
   });
   console.log(`  read prices_daily since ${cutoff} for ${instrumentCount} equities`);
   console.log(`  ${prices.length.toLocaleString()} equity price rows from the database`);
+  // Handed to build_workbook, which runs next in the same job and would otherwise pull
+  // the identical 131MB again. See writePriceCache: that second read was half of a
+  // nightly bill running at 118% of the free-tier allowance.
+  writePriceCache(prices, BASE);
+  console.log(`  cached for the workbook step (${PRICE_CACHE})`);
 }
 // Check that every EQUITY in the master is present, not that the row counts match.
 // The counts stopped matching the moment the four non-equity classes were added —
@@ -413,4 +419,4 @@ await write("sectoral_technicals_daily", sectoral, { onConflict: "industry_group
 await write("market_breadth_daily", breadth, { onConflict: "trade_date", label: "rows" });
 
 console.log(`\npublished screens as of ${asOf}. Verify with verify_screens.sql.`);
-if (db) console.log(`supabase: ${meterLine(db.meter)}`);
+if (db) { recordEgress("compute", db.meter, BASE); console.log(`supabase: ${meterLine(db.meter)}`); }

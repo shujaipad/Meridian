@@ -34,8 +34,8 @@ import { readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { connect, DEFAULT_DB_WINDOW_DAYS, meterLine, num, r2, readCSV,
-         readEquityPrices } from "./meridian-io.js";
+import { connect, DEFAULT_DB_WINDOW_DAYS, meterLine, newestEquityBar, num, r2,
+         readCSV, readEquityPrices, readPriceCache, recordEgress } from "./meridian-io.js";
 
 import {
   computeAll,
@@ -77,14 +77,29 @@ if (FROM_DB) {
   // falling back to the frozen CSVs is the failure this flag exists to prevent.
   const db = await connect();
   dbMeter = db.meter;
-  let mark = 0;
-  const { cutoff, instrumentCount } = await readEquityPrices(db, {
-    windowDays: DEFAULT_DB_WINDOW_DAYS, into: prices,
-    onProgress: (n) => {
-      if (n - mark >= 200_000) { mark = n; console.error(`    ${n.toLocaleString()} rows`); }
-    },
-  });
-  console.error(`  read prices_daily since ${cutoff} for ${instrumentCount} equities`);
+  // The compute step just read this window and cached it. Reading it again cost 131MB
+  // a night of a 275MB bill against a 5GB monthly allowance -- and the two reads were
+  // of the same rows, so the second bought nothing but a chance to disagree.
+  //
+  // Trusted only when the database agrees the cache is current: one row, a few bytes,
+  // and without it a stale cache yields a workbook that is internally perfect and a day
+  // old, which is precisely the failure this script was fixed for in §11d.
+  const newest = await newestEquityBar(db);
+  const cached = readPriceCache(newest, BASE);
+  if (cached) {
+    for (const r of cached) prices.push(r);   // appended, never spread: see readEquityPrices
+    console.error(`  ${prices.length.toLocaleString()} equity price rows from the compute step's cache`
+                + ` (newest ${newest})`);
+  } else {
+    let mark = 0;
+    const { cutoff, instrumentCount } = await readEquityPrices(db, {
+      windowDays: DEFAULT_DB_WINDOW_DAYS, into: prices,
+      onProgress: (n) => {
+        if (n - mark >= 200_000) { mark = n; console.error(`    ${n.toLocaleString()} rows`); }
+      },
+    });
+    console.error(`  no usable cache — read prices_daily since ${cutoff} for ${instrumentCount} equities`);
+  }
 } else {
   for (const f of readdirSync(BASE).filter((f) => /^meridian-price-history-2090-part\d+of3\.csv$/.test(f)).sort()) {
     for (const r of readCSV(join(BASE, f))) {
@@ -237,6 +252,6 @@ const outPath = process.argv.includes("--out")
   ? process.argv[process.argv.indexOf("--out") + 1] : OUT;
 writeFileSync(outPath, JSON.stringify(payload));
 console.error(`wrote ${outPath}`);
-if (FROM_DB) console.error(`supabase: ${meterLine(dbMeter)}`);
+if (dbMeter) { recordEgress("workbook", dbMeter, BASE); console.error(`supabase: ${meterLine(dbMeter)}`); }
 console.error(`  stocks ${stocks.length} | breakout ${breakout.length} | sectoral ${sectoral.length} `
             + `| sectoral breakout ${sectoralBreakout.length} | breadth ${breadth.length}`);

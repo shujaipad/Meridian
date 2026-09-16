@@ -23,7 +23,10 @@ import { arrearsInstrumentDays, deepRepullCap, medianNewestStored, restatementOf
          unsettledFrom } from "./meridian-detect.js";
 import { DEFAULT_DB_WINDOW_DAYS, DEFAULT_RETENTION_DAYS, egressSuffix, meterLine,
          meteredFetch, newMeter, PAGE, parseEgress, r4, readAll, readAllChunked,
-         readEquityPrices, rPrice } from "./meridian-io.js";
+         readEgress, readEquityPrices, readPriceCache, recordEgress, rPrice,
+         writePriceCache } from "./meridian-io.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 let failed = 0;
 // Awaited, always. An earlier draft called fn() and tested its return value, which
@@ -688,6 +691,59 @@ await check("what we upload is counted separately from what we download", async 
   await meteredFetch(meter, fake)("https://example.test", { body: "x".repeat(500) });
   if (meter.sentBytes !== 500) return `sentBytes ${meter.sentBytes}, want 500`;
   return meter.wireBytes === 10 ? null : `upload leaked into wireBytes (${meter.wireBytes})`;
+});
+
+// The defect the first metered run exposed: only one step of five wrote a tag, so the
+// gauge read 2% of the allowance against a real 118%.
+await check("every step's egress is recorded, and they sum to the night", () => {
+  const dir = mkdtempSync(`${tmpdir()}/meridian-`);
+  recordEgress("fetch", { ...newMeter(), wireBytes: 5 * 1048576, requests: 2270 }, dir);
+  recordEgress("compute", { ...newMeter(), wireBytes: 139 * 1048576, requests: 1187 }, dir);
+  recordEgress("workbook", { ...newMeter(), wireBytes: 131 * 1048576, requests: 1098 }, dir);
+  const steps = readEgress(dir);
+  if (steps.length !== 3) return `${steps.length} steps recorded, want 3`;
+  const total = steps.reduce((a, s2) => a + s2.bytes, 0) / 1048576;
+  // 275 MB, not the 5 MB the fetch step alone would have claimed.
+  return Math.round(total) === 275 ? null : `total ${total.toFixed(0)} MB, want 275`;
+});
+
+await check("a night with no recorded steps reads as none, not as zero bytes", () =>
+  eq(readEgress(mkdtempSync(`${tmpdir()}/meridian-`)), [], "steps"));
+
+await check("the 2026-09-16 night would now be reported as over the allowance", () => {
+  const perMonth = egressPerMonthMb(275 * 1048576);
+  const pct = (perMonth / EGRESS_LIMIT_MB) * 100;
+  return pct > 100 ? null : `${pct.toFixed(0)}% — the real night measured over the limit`;
+});
+
+// The price cache halves that bill, and must never be trusted when stale.
+await check("the cache round-trips the rows the workbook needs", () => {
+  const dir = mkdtempSync(`${tmpdir()}/meridian-`);
+  const rows = [{ ISIN: "INE397D01024", Date: "2026-09-16", High: 1870.7, Low: 1840,
+                  Close: 1840, Volume: 3614328 }];
+  writePriceCache(rows, dir);
+  const back = readPriceCache("2026-09-16", dir);
+  if (!back || back.length !== 1) return `read back ${back?.length} rows`;
+  return eq(back[0], rows[0], "row");
+});
+
+await check("a cache the database disagrees with is refused", () => {
+  const dir = mkdtempSync(`${tmpdir()}/meridian-`);
+  writePriceCache([{ ISIN: "A", Date: "2026-09-15", High: 1, Low: 1, Close: 1, Volume: 1 }], dir);
+  // The database says the newest bar is the 16th; a cache ending on the 15th is stale,
+  // and using it would produce a workbook that is internally perfect and a day old.
+  return eq(readPriceCache("2026-09-16", dir), null, "verdict");
+});
+
+await check("a missing cache is absent, not empty", () =>
+  eq(readPriceCache("2026-09-16", mkdtempSync(`${tmpdir()}/meridian-`)), null, "verdict"));
+
+await check("an empty cell round-trips as null, not as zero", () => {
+  const dir = mkdtempSync(`${tmpdir()}/meridian-`);
+  writePriceCache([{ ISIN: "A", Date: "2026-09-16", High: null, Low: null, Close: 5, Volume: null }], dir);
+  const back = readPriceCache("2026-09-16", dir);
+  return back && back[0].High === null && back[0].Volume === null ? null
+    : `nulls came back as ${JSON.stringify(back?.[0])}`;
 });
 
 await check("a check that could not run is reported, not assumed passed", () => {

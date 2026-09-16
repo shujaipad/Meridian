@@ -23,3 +23,6 @@ web/dist/
 web/fixture/
 web/shots/
 dryrun-screens/
+.meridian-egress.json
+.meridian-prices-cache.csv
+.meridian-repulled.json
