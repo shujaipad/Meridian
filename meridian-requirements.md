@@ -2655,6 +2655,38 @@ printed in full in the run log and names the cause.
 
 ---
 
+## 11f. The snapshot table that was never cleared
+*(2026-09-16)*
+
+Found by reading the capacity report the alerting work had just refactored:
+`market_breadth_daily` held **508 rows** where every run publishes exactly **500**.
+
+`compute_and_publish.mjs` replaces its snapshot tables wholesale — clear, then write.
+`clear()` issued `DELETE ... WHERE as_of_date >= '1900-01-01'`, and four of the five
+snapshot tables carry `as_of_date`. `market_breadth_daily` is keyed by `trade_date` and
+does not. Deleting from it would therefore have errored, so it was left out of the
+clear list and upserted only — and as the 500-day window slides forward, the dates
+falling off the back were never removed. The chart the app draws carried eight points
+the current computation does not produce, and the table grew by one row a night.
+
+Nothing would have surfaced it. Every run logged `market_breadth_daily: 500/500`,
+because 500 is what it *wrote*. The count of what was *there* appeared only in a report
+nobody was comparing against the expected number.
+
+`meridian-schema.js` now holds the list with the column each table is cleared by, and
+three checks cross-reference it against `supabase-schema.sql`: that every `clearOn`
+column exists on its table, that `market_breadth_daily` is in the list, and that every
+table the publish step writes is one the clear step clears. All three were
+negative-tested by reintroducing the original defect in both of its forms — the wrong
+column, and the missing entry.
+
+**The pattern worth naming:** a predicate that is valid for four tables out of five
+fails on the fifth by erroring, and the cheapest response to an error is to exclude the
+case that produced it. That exclusion is invisible afterwards. It is the same shape as
+§11c's paged read — the count was right, so nothing complained.
+
+---
+
 ## 12. Source of Truth for Code
 
 `meridian.jsx` in this repository is the current, authoritative application source —

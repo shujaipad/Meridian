@@ -42,6 +42,7 @@ import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { SNAPSHOT_TABLES } from "./meridian-schema.js";
 import { DEFAULT_DB_WINDOW_DAYS, num, r2, r4, readAll, readAllChunked, readCSV,
          readEquityPrices, rPrice, withRetry } from "./meridian-io.js";
 
@@ -115,11 +116,12 @@ async function write(table, rows, { onConflict, label }) {
   console.log("");
 }
 
-async function clear(table) {
+async function clear({ table, clearOn, floor }) {
   if (DRY) return;
-  // Snapshot tables are replaced wholesale. A bare delete needs a predicate, and
-  // one that is true for every row is the honest way to say "all of them".
-  const { error } = await db.from(table).delete().gte("as_of_date", "1900-01-01");
+  // Snapshot tables are replaced wholesale. A bare delete needs a predicate, and one
+  // that is true for every row is the honest way to say "all of them" -- on a column
+  // the table actually has, which is the part this got wrong. See meridian-schema.js.
+  const { error } = await db.from(table).delete().gte(clearOn, floor);
   if (error) { console.error(`clearing ${table}: ${error.message}`); process.exit(1); }
 }
 
@@ -403,9 +405,10 @@ for (const [label, rows] of [["technicals", technicals], ["sectoral", sectoral]]
 
 // ---------------------------------------------------------------- publish
 console.log("publishing...");
-for (const t of ["golden_breakout_candidates", "fundamentals_scored", "technicals_daily", "sectoral_technicals_daily"]) {
-  await clear(t);
-}
+// Every snapshot table, market_breadth_daily included. It was missing from this list
+// because clear() could not delete from it, and so it accumulated a row a night --
+// 508 breadth days published as 500.
+for (const t of SNAPSHOT_TABLES) await clear(t);
 await write("technicals_daily", technicals, { onConflict: "universe_id", label: "rows" });
 await write("fundamentals_scored", scored, { onConflict: "universe_id", label: "rows" });
 await write("golden_breakout_candidates", candidates, { onConflict: "universe_id", label: "rows" });

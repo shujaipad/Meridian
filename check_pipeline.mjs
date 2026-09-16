@@ -12,7 +12,10 @@
  *
  * The rule each one taught: a check that only counts rows cannot see either.
  */
+import { readFileSync } from "node:fs";
+
 import { evaluateHealth, mbPerYear, usedMbOf, worstLevel } from "./meridian-health.js";
+import { SNAPSHOT_TABLES } from "./meridian-schema.js";
 import { arrearsInstrumentDays, deepRepullCap, medianNewestStored, restatementOf,
          SETTLEMENT_DAYS, tradingArrearsSince, unabsorbedEventDate,
          unsettledFrom } from "./meridian-detect.js";
@@ -442,6 +445,48 @@ await check("the median newest stored bar ignores a few dead scrips", () => {
     5: { "2020-06-01": 1 },
   };
   return eq(medianNewestStored(storedBy), "2026-09-04", "median newest");
+});
+
+// ---------------------------------------------------------------- snapshot tables
+console.log("\nsnapshot tables");
+
+// Parsed from the schema rather than restated here: a second copy of the column list
+// would drift from the first, which is how the defect below got in.
+const schemaSql = readFileSync(new URL("./supabase-schema.sql", import.meta.url), "utf8");
+function columnsOf(table) {
+  const m = schemaSql.match(new RegExp(`create table ${table}\\s*\\(([\\s\\S]*?)\\n\\);`, "i"));
+  if (!m) return null;
+  return m[1].split("\n")
+    .map((l) => l.trim().split(/\s+/)[0].replace(/[(),]/g, ""))
+    .filter((c) => c && !/^(unique|primary|foreign|check|constraint|--)$/i.test(c));
+}
+
+await check("every snapshot table is cleared on a column it actually has", () => {
+  const bad = [];
+  for (const { table, clearOn } of SNAPSHOT_TABLES) {
+    const cols = columnsOf(table);
+    if (!cols) { bad.push(`${table}: not found in supabase-schema.sql`); continue; }
+    if (!cols.includes(clearOn)) bad.push(`${table}.${clearOn} does not exist (has ${cols.join(", ")})`);
+  }
+  return bad.length ? bad.join("; ") : null;
+});
+
+// The defect itself: market_breadth_daily was upserted every night and never cleared,
+// because clear() deleted on as_of_date and that table is keyed by trade_date. 500
+// rows published, 508 in the table, growing by one a night.
+await check("market_breadth_daily is cleared like the other snapshots", () => {
+  const entry = SNAPSHOT_TABLES.find((t) => t.table === "market_breadth_daily");
+  if (!entry) return "the table that actually grew is not in the clear list";
+  return entry.clearOn === "trade_date" ? null
+    : `cleared on ${entry.clearOn}, which market_breadth_daily does not have`;
+});
+
+await check("the clear list covers every table the publish step writes", () => {
+  const src = readFileSync(new URL("./compute_and_publish.mjs", import.meta.url), "utf8");
+  const written = [...src.matchAll(/await write\("([a-z_]+)"/g)].map((m) => m[1]);
+  const cleared = new Set(SNAPSHOT_TABLES.map((t) => t.table));
+  const missing = written.filter((t) => !cleared.has(t));
+  return missing.length ? `published but never cleared: ${missing.join(", ")}` : null;
 });
 
 // ---------------------------------------------------------------- health
