@@ -2863,6 +2863,106 @@ case that produced it. That exclusion is invisible afterwards. It is the same sh
 
 ---
 
+## 11g. Egress, and the gauge that read 2% of 118%
+*(2026-09-16)*
+
+Egress was the last quota with a number in prose and nothing comparing anything to it —
+"5GB bandwidth" in §6.5, exactly the state the 500MB storage limit was in on the day the
+database filled up (§11b). Measuring it took one metered run to find a real problem and
+one more to find the problem in the measurement.
+
+**What the run measured:**
+
+| step | down | requests |
+|---|---|---|
+| fetch | 5.0 MB | 2,270 |
+| compute | 139.1 MB | 1,187 |
+| workbook | 131.3 MB | 1,098 |
+| **per run** | **275.4 MB** | |
+
+275 MB × 22 weekday runs is **6.06 GB a month against a 5GB allowance — 118%.** Meridian
+had been over its egress budget, silently, for as long as the pipeline had been working.
+
+**And the gauge reported 2%.** Only `daily_fetch` wrote an egress tag, and `daily_fetch`
+is 5MB of a 275MB night; the two steps that are 98% of the consumption were invisible to
+the instrument built to watch them. A number that looks fine and measures the wrong
+thing is worse than no number, and it is the same defect as §11c's row count — right
+about what it counted, wrong about what it was for.
+
+Every step now appends its meter to a workspace file. The capacity check runs last, sums
+them, prints the breakdown, and persists the night's total as its own job-log row.
+`daily_fetch`'s row is untagged: it describes one step and was never entitled to speak
+for the night.
+
+**The overage was fixed, not just reported.** `compute` and `build_workbook` each pulled
+the same 800-day window, as separate processes; the second read bought nothing but a
+chance to disagree. Compute caches what it read and the workbook uses it:
+
+| | before | after |
+|---|---|---|
+| per run | 275.4 MB | **144.2 MB** |
+| per month | 6.06 GB | **3.10 GB** |
+| of allowance | 118% | **62%** |
+
+Measured on the next run: the workbook step went from 131.3 MB in 1,098 requests to
+**0.0 MB in 1 request** — that one request being the check that the cache is current.
+Without it a stale cache would produce a workbook internally perfect and a day old,
+which is precisely the failure §11d existed to fix. It also makes §11d's guarantee
+stronger: the workbook and the screens no longer merely read the same window, they read
+the same *read*.
+
+Two things this does not cover, stated so they are not mistaken for covered: browser
+traffic (at most 100 invited users reading ~6,700 published rows a session — small
+beside the pipeline, but not zero), and Supabase's own accounting, which may differ from
+what the client sees. The Management API would give the authoritative figure and needs a
+personal access token; the self-measurement covers the dominant consumer today with no
+new secret.
+
+---
+
+## 11h. The git price mirror — where "append-only" turned out to be the wrong rule
+*(2026-09-16)*
+
+The committed CSVs are the only copy of this data outside a free-tier database. They are
+what made 2026-09-10 survivable, and they are what the research sandbox reads. Frozen at
+the backfill, both got less true every night.
+
+The rule carried into this was "append-only, because rewriting a 127MB dataset nightly
+would bloat the repository". **Measuring it showed append-only was not the property that
+mattered.** Three designs, on a real 42MB base file over 21 nights of real bars, taking
+the pack git would actually push:
+
+| | per night |
+|---|---|
+| append to the 42MB base file | 14,442,858 bytes |
+| append to one growing file | 931,080 bytes, and rising |
+| **one immutable file per run** | **45,587 bytes, flat forever** |
+
+Git deltifies all three equally well *once it garbage-collects* — the gc'd repository
+ends the same size whichever is chosen. What differs is every night in between: a commit
+touching the base file writes and pushes a fresh ~14MB blob until a gc it does not
+control deltifies it. A file written once and never reopened costs its own bytes and
+nothing else. **317×, measured rather than reasoned about.**
+
+**Watermarks are per asset class**, and that is not a preference: the committed equity
+history ended 2026-09-04 and the four non-equity files ended 2026-09-09. One global
+watermark at the later date would have skipped five days of equity bars — invisibly,
+because a gap in a price CSV looks exactly like a market holiday.
+
+**Corrections ride the same mechanism.** A deep re-pull rewrites history *below* the
+watermark, so the mirror cannot find those rows by asking what is new; it has to be told.
+`daily_fetch` writes the re-pulled list where `append_history` reads it in the same job.
+The merge rule — base, then every append file in filename order, last value for a
+(Key, Date) wins — is correct for a new bar, which collides with nothing, and for a
+correction, which is meant to overwrite.
+
+First run, verified: 16,662 bars — 14,437 new and 2,225 corrected, the corrections
+reaching back to 2023-09-12 for the three instruments deep re-pulled that night. All five
+watermarks now read 2026-09-16. `meridian-history.js` holds the merge rule as code and
+`history/README.md` documents it, so the sandbox does not have to re-derive it.
+
+---
+
 ## 12. Source of Truth for Code
 
 `meridian.jsx` in this repository is the current, authoritative application source —
