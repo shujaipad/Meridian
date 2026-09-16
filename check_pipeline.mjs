@@ -14,13 +14,15 @@
  */
 import { readFileSync } from "node:fs";
 
-import { evaluateHealth, mbPerYear, usedMbOf, worstLevel } from "./meridian-health.js";
+import { egressPerMonthMb, EGRESS_LIMIT_MB, evaluateHealth, mbPerYear, RUNS_PER_MONTH,
+         usedMbOf, worstLevel } from "./meridian-health.js";
 import { SNAPSHOT_TABLES } from "./meridian-schema.js";
 import { arrearsInstrumentDays, deepRepullCap, medianNewestStored, restatementOf,
          SETTLEMENT_DAYS, tradingArrearsSince, unabsorbedEventDate,
          unsettledFrom } from "./meridian-detect.js";
-import { DEFAULT_DB_WINDOW_DAYS, DEFAULT_RETENTION_DAYS, PAGE, r4, readAll,
-         readAllChunked, readEquityPrices, rPrice } from "./meridian-io.js";
+import { DEFAULT_DB_WINDOW_DAYS, DEFAULT_RETENTION_DAYS, egressSuffix, meterLine,
+         meteredFetch, newMeter, PAGE, parseEgress, r4, readAll, readAllChunked,
+         readEquityPrices, rPrice } from "./meridian-io.js";
 
 let failed = 0;
 // Awaited, always. An earlier draft called fn() and tested its return value, which
@@ -555,6 +557,87 @@ await check("a two-year trajectory warns but does not wake anyone", () => {
   const t = f.find((x) => x.code === "trajectory");
   if (!t) return "a full-in-months trajectory produced no finding";
   return t.level === "warning" ? null : `level ${t.level}, want warning`;
+});
+
+// EGRESS -- the last quota that was a number in prose (§6.5) rather than a gauge.
+await check("egress inside the allowance says nothing", () => {
+  const f = evalWith({ jobs: [{ status: "success", egress: { bytes: 60 * 1048576, requests: 900 } }] });
+  return f.some((x) => x.code.startsWith("egress")) ? "60 MB a run raised a finding" : null;
+});
+
+await check("egress past the warn threshold warns", () => {
+  // 190 MB x 22 runs is ~4.1 GB, 80% of the 5 GB allowance.
+  const f = evalWith({ jobs: [{ status: "success", egress: { bytes: 190 * 1048576, requests: 9000 } }] });
+  const e = f.find((x) => x.code === "egress");
+  return e && e.level === "warning" ? null : "80% of the allowance passed silently";
+});
+
+await check("egress over the allowance is an error", () => {
+  const f = evalWith({ jobs: [{ status: "success", egress: { bytes: 300 * 1048576, requests: 9000 } }] });
+  const e = f.find((x) => x.code === "egress-over");
+  return e && e.level === "error" ? null : "exceeding the allowance was not an error";
+});
+
+await check("the worst recent run sets the projection, not the average", () => {
+  // A quiet Saturday must not average away a weekday that blows the budget.
+  const f = evalWith({ jobs: [
+    { status: "success", egress: { bytes: 5 * 1048576, requests: 10 } },
+    { status: "success", egress: { bytes: 300 * 1048576, requests: 9000 } },
+  ] });
+  return f.some((x) => x.code === "egress-over") ? null : "the big run was averaged away";
+});
+
+await check("egress projects over trading days, not calendar days", () => {
+  if (RUNS_PER_MONTH !== 22) return `RUNS_PER_MONTH is ${RUNS_PER_MONTH}; the job runs weekdays`;
+  const mb = egressPerMonthMb(100 * 1048576);
+  return Math.round(mb) === 2200 ? null : `${mb} MB/month for a 100 MB run, want 2200`;
+});
+
+await check("a run with no egress tag is skipped, not counted as zero", () => {
+  const f = evalWith({ jobs: [{ status: "success", message: "swept 2238", egress: null }] });
+  return f.some((x) => x.code.startsWith("egress")) ? "an untagged run produced a finding" : null;
+});
+
+// The suffix has to survive the round trip through fetch_job_log.message.
+await check("the egress tag round-trips through the job log message", () => {
+  const meter = { requests: 9_123, wireBytes: 250_000_000, decodedBytes: 1_000_000,
+                  sentBytes: 5_000, unmeasured: 0 };
+  const message = `swept 2238, +4991 bars, 3 re-pulled, 0 failed ${egressSuffix(meter)}`;
+  const back = parseEgress(message);
+  if (!back) return `did not parse: ${message}`;
+  if (back.bytes !== 251_000_000) return `bytes ${back.bytes}, want 251000000`;
+  return eq(back.requests, 9123, "requests");
+});
+
+await check("a message with no tag parses as absent, not as zero", () =>
+  eq(parseEgress("swept 2238, +4991 bars"), null, "parsed"));
+
+// The meter itself: content-length is preferred because that is what a provider bills.
+await check("the meter counts wire bytes when content-length is present", async () => {
+  const meter = newMeter();
+  const fake = async () => ({ headers: { get: (h) => (h === "content-length" ? "1024" : null) } });
+  await meteredFetch(meter, fake)("https://example.test", {});
+  if (meter.wireBytes !== 1024) return `wireBytes ${meter.wireBytes}, want 1024`;
+  return eq(meter.requests, 1, "requests");
+});
+
+await check("a chunked response is measured from its body", async () => {
+  const meter = newMeter();
+  const body = new Uint8Array(2048);
+  const fake = async () => ({
+    headers: { get: () => null },
+    clone: () => ({ arrayBuffer: async () => body.buffer }),
+  });
+  await meteredFetch(meter, fake)("https://example.test", {});
+  return eq(meter.decodedBytes, 2048, "decodedBytes");
+});
+
+await check("what we upload is counted separately from what we download", async () => {
+  const meter = newMeter();
+  const fake = async () => ({ headers: { get: () => "10" } });
+  await meteredFetch(meter, fake)("https://example.test", { body: "x".repeat(500) });
+  if (meter.sentBytes !== 500) return `sentBytes ${meter.sentBytes}, want 500`;
+  return meter.wireBytes === 10 ? null : `upload leaked into wireBytes (${meter.wireBytes})`;
 });
 
 await check("a check that could not run is reported, not assumed passed", () => {

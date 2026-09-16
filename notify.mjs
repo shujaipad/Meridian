@@ -27,7 +27,9 @@
  * mail you about it, and says so. The failure mode of alerting is silence, so silence
  * is never the response to a real finding.
  */
-import { collectHealth, evaluateHealth, usedMbOf, worstLevel } from "./meridian-health.js";
+import { collectHealth, egressPerMonthMb, evaluateHealth, usedMbOf,
+         worstLevel } from "./meridian-health.js";
+import { connect } from "./meridian-io.js";
 
 const DRY = process.argv.includes("--dry-run");
 const MODE = process.argv.includes("--watchdog") ? "watchdog"
@@ -104,13 +106,7 @@ if (MODE === "failure") {
 }
 
 // ---------------------------------------------------------------- watchdog mode
-const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env;
-if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  console.error("Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
-  process.exit(1);
-}
-const { createClient } = await import("@supabase/supabase-js");
-const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
+const db = await connect();
 
 const facts = await collectHealth(db, { tables: ["prices_daily", "technicals_daily"] });
 const findings = evaluateHealth(facts, {
@@ -125,6 +121,12 @@ const state = [
   ...Object.entries(facts.freshness).sort()
     .map(([c, d]) => `  ${c.padEnd(12)} as of ${d}`),
   usedMb != null ? `  database     ${usedMb} MB` : null,
+  (() => {
+    const m = facts.jobs.filter((j) => j.egress?.bytes > 0).map((j) => j.egress.bytes);
+    if (!m.length) return null;
+    const perMonth = egressPerMonthMb(Math.max(...m));
+    return `  egress       ~${(perMonth / 1024).toFixed(2)} GB/month projected`;
+  })(),
   facts.rowCounts.prices_daily?.count != null
     ? `  price rows   ${facts.rowCounts.prices_daily.count.toLocaleString()}` : null,
 ].filter(Boolean).join("\n");

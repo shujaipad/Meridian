@@ -34,7 +34,8 @@ import { readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { DEFAULT_DB_WINDOW_DAYS, num, r2, readCSV, readEquityPrices } from "./meridian-io.js";
+import { connect, DEFAULT_DB_WINDOW_DAYS, meterLine, num, r2, readCSV,
+         readEquityPrices } from "./meridian-io.js";
 
 import {
   computeAll,
@@ -70,17 +71,12 @@ const fundamentals = readCSV(join(BASE, "meridian-fundamentals-742.csv"))
   }));
 
 const prices = [];
+let dbMeter = null;
 if (FROM_DB) {
-  const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env;
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    // Named here rather than left to fail inside the client: --from-db silently
-    // falling back to the CSVs is the failure this flag exists to prevent, so it
-    // refuses instead.
-    console.error("--from-db needs SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
-    process.exit(1);
-  }
-  const { createClient } = await import("@supabase/supabase-js");
-  const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
+  // connect() refuses without credentials, which is what --from-db needs: silently
+  // falling back to the frozen CSVs is the failure this flag exists to prevent.
+  const db = await connect();
+  dbMeter = db.meter;
   let mark = 0;
   const { cutoff, instrumentCount } = await readEquityPrices(db, {
     windowDays: DEFAULT_DB_WINDOW_DAYS, into: prices,
@@ -241,5 +237,6 @@ const outPath = process.argv.includes("--out")
   ? process.argv[process.argv.indexOf("--out") + 1] : OUT;
 writeFileSync(outPath, JSON.stringify(payload));
 console.error(`wrote ${outPath}`);
+if (FROM_DB) console.error(`supabase: ${meterLine(dbMeter)}`);
 console.error(`  stocks ${stocks.length} | breakout ${breakout.length} | sectoral ${sectoral.length} `
             + `| sectoral breakout ${sectoralBreakout.length} | breadth ${breadth.length}`);

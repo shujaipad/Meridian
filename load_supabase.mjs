@@ -50,7 +50,7 @@ import { createInterface } from "node:readline";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { num, readAll, readCSV, sleep, splitCSVLine, TRANSIENT } from "./meridian-io.js";
+import { connect, meterLine, num, readAll, readCSV, sleep, splitCSVLine, TRANSIENT } from "./meridian-io.js";
 
 const BASE = dirname(fileURLToPath(import.meta.url));
 const PROGRESS = join(BASE,
@@ -113,10 +113,7 @@ if (!DRY && (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY)) {
 // whole point is to be runnable anywhere, including where @supabase/supabase-js
 // is not installed.
 let db = null;
-if (!DRY) {
-  const { createClient } = await import("@supabase/supabase-js");
-  db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
-}
+if (!DRY) db = await connect();
 
 const tsv = (v) => (v === null || v === undefined ? "\\N" : String(v));
 const dryStreams = {};

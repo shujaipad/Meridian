@@ -43,8 +43,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { SNAPSHOT_TABLES } from "./meridian-schema.js";
-import { DEFAULT_DB_WINDOW_DAYS, num, r2, r4, readAll, readAllChunked, readCSV,
-         readEquityPrices, rPrice, withRetry } from "./meridian-io.js";
+import { connect, DEFAULT_DB_WINDOW_DAYS, meterLine, num, r2, r4, readAll,
+         readAllChunked, readCSV, readEquityPrices, rPrice, withRetry } from "./meridian-io.js";
 
 import {
   bandOfRSRating, closesByKeyFromPrices, computeAll, computeBreadthSeries,
@@ -72,10 +72,7 @@ if (!DRY && (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY)) {
   process.exit(1);
 }
 let db = null;
-if (!DRY) {
-  const { createClient } = await import("@supabase/supabase-js");
-  db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
-}
+if (!DRY) db = await connect();
 
 // Postgres text-format COPY: \N is NULL, and tab/newline/backslash must be escaped
 // or a jsonb payload containing one would silently shift every later column.
@@ -416,3 +413,4 @@ await write("sectoral_technicals_daily", sectoral, { onConflict: "industry_group
 await write("market_breadth_daily", breadth, { onConflict: "trade_date", label: "rows" });
 
 console.log(`\npublished screens as of ${asOf}. Verify with verify_screens.sql.`);
+if (db) console.log(`supabase: ${meterLine(db.meter)}`);

@@ -16,15 +16,11 @@
  * (supabase-migration-005-capacity.sql). Without it you still get the thing that
  * actually predicts trouble: how many rows there are and how fast they arrive.
  */
-import { collectHealth, evaluateHealth, mbPerYear, usedMbOf } from "./meridian-health.js";
+import { collectHealth, EGRESS_LIMIT_MB, egressPerMonthMb, evaluateHealth, mbPerYear,
+         RUNS_PER_MONTH, usedMbOf } from "./meridian-health.js";
+import { connect, meterLine } from "./meridian-io.js";
 
-const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env;
-if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  console.error("Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY first.");
-  process.exit(1);
-}
-const { createClient } = await import("@supabase/supabase-js");
-const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
+const db = await connect();
 
 // Supabase's Free plan quota. The number that was written down and never checked.
 const LIMIT_MB = Number(process.env.DB_LIMIT_MB ?? 500);
@@ -107,6 +103,26 @@ if (facts.dupes.length) {
   console.log("    (which to keep is yours to pick -- one usually backs a constraint)");
 }
 
+// Egress: the last quota that had a number in prose and no gauge (§6.5). Measured
+// from what the runs actually transferred, not estimated from row counts.
+console.log("\n  egress");
+const metered = facts.jobs.filter((j) => j.egress?.bytes > 0);
+if (!metered.length) {
+  console.log("    not measured yet — runs before 2026-09-17 carry no egress tag");
+} else {
+  for (const j of metered) {
+    console.log(`    ${(j.finished_at ?? "").slice(0, 16).replace("T", " ")}`
+              + ` ${(j.egress.bytes / 1048576).toFixed(0).padStart(5)} MB`
+              + ` in ${j.egress.requests.toLocaleString()} requests`);
+  }
+  const worst = Math.max(...metered.map((j) => j.egress.bytes));
+  const perMonth = egressPerMonthMb(worst);
+  console.log(`    worst run ${(worst / 1048576).toFixed(0)} MB`
+            + ` x ${RUNS_PER_MONTH} runs = ~${(perMonth / 1024).toFixed(2)} GB/month`
+            + ` of ${(EGRESS_LIMIT_MB / 1024).toFixed(0)} GB`
+            + ` — ${((perMonth / EGRESS_LIMIT_MB) * 100).toFixed(0)}%`);
+}
+
 // The same verdict the watchdog reaches, from the same facts and the same function.
 // Printed here rather than re-derived: if these two ever disagree about whether
 // Meridian is healthy, one of them is lying, and sharing evaluateHealth is what makes
@@ -179,3 +195,4 @@ if (usedMb != null) {
   }
 }
 console.log("--------------------------------------------------------------\n");
+console.log(`  this report: ${meterLine(db.meter)}`);

@@ -18,7 +18,7 @@
  */
 
 import { readFileSync, statSync } from "node:fs";
-import { createClient } from "@supabase/supabase-js";
+import { connect, meterLine } from "./meridian-io.js";
 
 const BUCKET = "workbooks";
 const MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
@@ -43,9 +43,10 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 const asOf = JSON.parse(readFileSync(arg("data", "workbook-data.json"), "utf8")).meta.as_of;
 const datedKey = `daily/meridian-${asOf}.xlsx`;
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-  auth: { persistSession: false },
-});
+// Metered like the rest, though this one is almost all UPLOAD: a ~750KB workbook
+// written twice (dated and latest). Worth counting anyway -- egress is measured by
+// what the meter sees, not by what we assumed would be small.
+const supabase = await connect();
 
 const body = readFileSync(file);
 console.error(`publishing ${file} (${(statSync(file).size / 1024).toFixed(0)} KB) as of ${asOf}`);
@@ -88,3 +89,4 @@ if (stale.length) {
 } else {
   console.error(`  nothing older than ${cutoff} to prune`);
 }
+console.error(`supabase: ${meterLine(supabase.meter)}`);

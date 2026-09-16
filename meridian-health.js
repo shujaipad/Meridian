@@ -42,7 +42,8 @@ export async function collectHealth(db, { tables = [] } = {}) {
       .select("job_type,status,message,finished_at")
       .order("finished_at", { ascending: false }).limit(5);
     if (error) throw new Error(error.message);
-    facts.jobs = data ?? [];
+    const { parseEgress } = await import("./meridian-io.js");
+    facts.jobs = (data ?? []).map((j) => ({ ...j, egress: parseEgress(j.message) }));
   } catch (e) { facts.errors.push(`fetch_job_log: ${e.message}`); }
 
   // Byte sizes need the optional helper (supabase-migration-005-capacity.sql). Their
@@ -65,6 +66,24 @@ export function usedMbOf(sizes) {
 }
 
 export const ROWS_PER_NIGHT = 2240;
+
+/**
+ * Supabase's free tier allows 5GB of egress a month. §6.5 wrote that down in prose and
+ * nothing ever compared anything to it -- the same shape as the 500MB storage limit,
+ * which stayed prose until the day the database went read-only (§11b).
+ *
+ * TRADING DAYS, not calendar days: the pipeline runs weekdays only, and 22 is the
+ * month's working average. Projecting from 30 would overstate the bill by a third and
+ * make a real problem look like a worse one, which is its own kind of wrong number.
+ */
+export const EGRESS_LIMIT_MB = 5120;
+export const RUNS_PER_MONTH = 22;
+
+/** Monthly egress implied by one run's measured bytes. */
+export function egressPerMonthMb(bytesPerRun) {
+  if (!bytesPerRun) return null;
+  return (bytesPerRun * RUNS_PER_MONTH) / 1048576;
+}
 
 /** Bytes per row is MEASURED, never assumed — see db_report.mjs for why that matters. */
 export function mbPerYear(usedMb, rows) {
@@ -140,6 +159,28 @@ export function evaluateHealth(facts, {
         add("warning", "trajectory",
             `On the current trajectory the database is full in ${(years * 12).toFixed(0)} months.`);
       }
+    }
+  }
+
+  // Egress, measured from what the last runs actually transferred rather than
+  // estimated from row counts. The pipeline is the dominant consumer by a wide margin;
+  // browser traffic from at most 100 invited users reading ~6,700 published rows a
+  // session is small beside a nightly job that reads an 800-day window twice.
+  const runs = (facts.jobs ?? []).map((j) => j.egress).filter((e) => e && e.bytes > 0);
+  if (runs.length) {
+    const worst = Math.max(...runs.map((r) => r.bytes));
+    const perMonth = egressPerMonthMb(worst);
+    const pct = (perMonth / EGRESS_LIMIT_MB) * 100;
+    const shape = `${(worst / 1048576).toFixed(0)} MB per run x ${RUNS_PER_MONTH} runs `
+                + `= ~${(perMonth / 1024).toFixed(2)} GB/month of ${(EGRESS_LIMIT_MB / 1024).toFixed(0)} GB`;
+    if (pct >= 100) {
+      add("error", "egress-over",
+          `Egress is over the free-tier allowance: ${shape} (${pct.toFixed(0)}%). `
+        + "Past it Supabase throttles or bills; the nightly job reads the 800-day "
+        + "window twice, which is where almost all of it goes.");
+    } else if (pct >= warnPct) {
+      add("warning", "egress",
+          `Egress is at ${pct.toFixed(0)}% of the free-tier allowance: ${shape}.`);
     }
   }
 

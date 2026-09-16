@@ -48,7 +48,8 @@ import { fileURLToPath } from "node:url";
 
 import { arrearsInstrumentDays, deepRepullCap, exchangeDateFormatter, restatementOf,
          SETTLEMENT_DAYS, unabsorbedEventDate, unsettledFrom } from "./meridian-detect.js";
-import { DEFAULT_RETENTION_DAYS, readAll, readCSV, rPrice, sleep, withRetry } from "./meridian-io.js";
+import { connect, DEFAULT_RETENTION_DAYS, egressSuffix, meterLine, readAll, readCSV,
+         rPrice, sleep, withRetry } from "./meridian-io.js";
 
 const BASE = dirname(fileURLToPath(import.meta.url));
 const CHART = "https://query1.finance.yahoo.com/v8/finance/chart/";
@@ -74,13 +75,7 @@ const DRY = process.argv.includes("--dry-run");
 const LIMIT = process.argv.includes("--limit")
   ? Number(process.argv[process.argv.indexOf("--limit") + 1]) : null;
 
-const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env;
-if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  console.error("Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
-  process.exit(1);
-}
-const { createClient } = await import("@supabase/supabase-js");
-const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
+const db = await connect();
 
 
 // ---------------------------------------------------------------- fetch
@@ -409,12 +404,16 @@ if (!DRY) {
   await db.from("fetch_job_log").insert({
     job_type: "daily",
     status: failures.length ? "failure" : "success",
-    message: `swept ${targets.length}, +${appended} bars, ${flagged.length} re-pulled, ${failures.length} failed`,
+    // The egress suffix rides in `message` because fetch_job_log has no column for it
+    // and adding one needs a migration run by hand -- see egressSuffix. db_report and
+    // the watchdog parse it back out to project the monthly total.
+    message: `swept ${targets.length}, +${appended} bars, ${flagged.length} re-pulled, `
+           + `${failures.length} failed ${egressSuffix(db.meter)}`,
     started_at: new Date(t0).toISOString(), finished_at: new Date().toISOString(),
   });
 }
 
-console.log(`\n${((Date.now() - t0) / 60000).toFixed(1)} min`);
+console.log(`\n${((Date.now() - t0) / 60000).toFixed(1)} min — ${meterLine(db.meter)}`);
 if (failures.length) {
   console.error(`\n${failures.length} FAILURE(S):`);
   failures.slice(0, 40).forEach((f) => console.error(`  ${f.symbol}: ${f.error}`));

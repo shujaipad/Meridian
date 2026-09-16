@@ -22,7 +22,7 @@
  * Usage:  node prune_prices.mjs [--days N] [--dry-run]
  */
 
-import { DEFAULT_RETENTION_DAYS } from "./meridian-io.js";
+import { connect, DEFAULT_RETENTION_DAYS, meterLine } from "./meridian-io.js";
 
 // Arguments are validated BEFORE anything needs credentials or a network. A bad
 // --days should say so, not fail three layers down in a module import.
@@ -41,13 +41,7 @@ if (!Number.isFinite(RETENTION_DAYS) || RETENTION_DAYS < FLOOR_DAYS) {
   process.exit(1);
 }
 
-const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env;
-if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  console.error("Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY first.");
-  process.exit(1);
-}
-const { createClient } = await import("@supabase/supabase-js");
-const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
+const db = await connect();
 
 const cutoff = new Date(Date.now() - RETENTION_DAYS * 86400_000).toISOString().slice(0, 10);
 console.log(`retention: ${RETENTION_DAYS} days — deleting bars before ${cutoff}${DRY ? " (DRY RUN)" : ""}`);
@@ -102,3 +96,5 @@ console.log(`  pruned ${removed} trading day(s); ${after?.toLocaleString() ?? "?
 // is that tomorrow's rows land in today's freed pages instead of extending the file.
 // Autovacuum handles the reclaim; a nightly prune of one day never outruns it.
 console.log("  (space is reused in place; the file size stays flat rather than shrinking)");
+
+console.log(`supabase: ${meterLine(db.meter)}`);

@@ -209,6 +209,102 @@ export async function readAllChunked(db, table, columns, { idColumn, ids, orderB
   return out;
 }
 
+// ---------------------------------------------------------------- the connection
+/**
+ * One Supabase client, made in one place, with a byte meter on it.
+ *
+ * Seven scripts each built their own with the same three lines. That alone was worth
+ * fixing, but the meter is the reason this exists now: **egress was the last quota
+ * with no gauge on it.** Supabase's free tier allows 5GB a month, §6.5 wrote that
+ * number down in prose, and nothing has ever compared anything to it — which is
+ * precisely the state the database was in on 2026-09-10 when it filled up and went
+ * read-only (§11b). A number in prose is not a measurement.
+ *
+ * The meter counts what the wire actually carried. `content-length` is preferred over
+ * the decoded size because that is what a provider bills: if PostgREST gzips a
+ * response, the compressed bytes are what crossed the network, and the decoded size
+ * would overstate egress by whatever the compression ratio happens to be. Both are
+ * tallied so the ratio itself is visible rather than assumed.
+ *
+ * Requests without a content-length (chunked) fall back to measuring the body, which
+ * costs one clone of that response. Pages are ~1,000 rows, so that is bounded.
+ */
+export function newMeter() {
+  return { requests: 0, wireBytes: 0, decodedBytes: 0, sentBytes: 0, unmeasured: 0 };
+}
+
+const sizeOf = (body) => {
+  if (body == null) return 0;
+  if (typeof body === "string") return Buffer.byteLength(body);
+  if (body instanceof ArrayBuffer) return body.byteLength;
+  if (ArrayBuffer.isView(body)) return body.byteLength;
+  return 0;                               // a stream; not worth consuming to measure
+};
+
+export function meteredFetch(meter, underlying = fetch) {
+  return async (input, init) => {
+    meter.requests++;
+    meter.sentBytes += sizeOf(init?.body);
+    const res = await underlying(input, init);
+    const len = res.headers?.get?.("content-length");
+    if (len != null && len !== "") {
+      const n = Number(len);
+      if (Number.isFinite(n)) meter.wireBytes += n;
+    } else {
+      try {
+        meter.decodedBytes += (await res.clone().arrayBuffer()).byteLength;
+      } catch { meter.unmeasured++; }
+    }
+    return res;
+  };
+}
+
+/**
+ * The credentials check lives here too, so every script refuses the same way with the
+ * same message instead of seven near-identical copies drifting.
+ */
+export async function connect({ url, key, meter } = {}) {
+  const SUPABASE_URL = url ?? process.env.SUPABASE_URL;
+  const SUPABASE_SERVICE_ROLE_KEY = key ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    console.error("Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
+    process.exit(1);
+  }
+  const { createClient } = await import("@supabase/supabase-js");
+  const m = meter ?? newMeter();
+  const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false },
+    global: { fetch: meteredFetch(m) },
+  });
+  db.meter = m;
+  return db;
+}
+
+const MB = 1048576;
+export const meterTotalBytes = (m) => m.wireBytes + m.decodedBytes;
+
+/** A one-line summary, and the structured suffix fetch_job_log carries (see below). */
+export function meterLine(m) {
+  const total = meterTotalBytes(m);
+  return `${m.requests.toLocaleString()} requests, `
+       + `${(total / MB).toFixed(1)} MB down, ${(m.sentBytes / MB).toFixed(1)} MB up`
+       + (m.unmeasured ? `, ${m.unmeasured} unmeasured` : "");
+}
+
+/**
+ * fetch_job_log has no column for this and adding one needs a migration run by hand in
+ * the SQL editor — which, for an owner who travels, is the difference between a
+ * measurement that exists this week and one that exists eventually. So it rides in
+ * `message` as a structured suffix that both sides agree on and a check covers.
+ */
+export const EGRESS_TAG = /\| egress=(\d+) requests=(\d+)/;
+export const egressSuffix = (m) =>
+  `| egress=${meterTotalBytes(m)} requests=${m.requests}`;
+export function parseEgress(message) {
+  const m = EGRESS_TAG.exec(message ?? "");
+  return m ? { bytes: Number(m[1]), requests: Number(m[2]) } : null;
+}
+
 // ---------------------------------------------------------------- price reads
 /**
  * The trailing window of EQUITY bars, keyed by ISIN, in the shape every consumer of
