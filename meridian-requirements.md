@@ -27,11 +27,34 @@ looks like (§6–§8).
 ---
 
 ## 2. Current State — What Exists Today
+*(This section last verified against a live run on 2026-09-16.)*
 
-Meridian today is a single React artifact (`meridian.jsx`), running client-side with
-no backend. It is feature-complete for its current phase but **not production-infrastructure** —
-data is user-uploaded each session, nothing persists reliably at scale (see §6.1 for why),
-and there is no automation.
+**Meridian is in production and runs itself.** The React app is deployed on Vercel
+behind Supabase Auth, reads published screens from Postgres, and computes nothing. A
+nightly GitHub Actions pipeline fetches prices for all 2,238 instruments, recomputes
+every screen, republishes the workbook, prunes history past the retention window and
+checks the database against its quota — unattended, on a schedule, with alerting on two
+independent channels when it does not.
+
+That was not true until 2026-09-16, and the distance is worth stating plainly because
+the sections below were written before it: the nightly job was scheduled on 2026-09-11
+and **failed on every one of its first four runs**. §11c–§11f record what was wrong and
+what each defect had in common. As of the first green end-to-end run:
+
+| | |
+|---|---|
+| Nightly pipeline | Green and unattended; steady state ~3 flagged instruments a night |
+| Screens | All five asset classes, published same-day |
+| Workbook | Same day, same rows, same window as the screens (§11d) |
+| Database | ~204 MB of Supabase's 500 MB — 40.8%, growing ~114 MB/year |
+| Retention | 1,100 days, pruned nightly, so the table is flat rather than growing |
+| Alerting | Failure hook + independent watchdog (§11e) |
+| Checks | 58 pipeline self-checks, 29 browser checks, all negative-tested |
+
+The prototype this section used to describe — a single client-side artifact with
+user-uploaded CSVs and no automation — is still in the repository as `meridian.jsx`,
+and is still the reference the production UI was ported from (§6.2). It is no longer
+what "Meridian" means.
 
 ### 2.1 Structure
 **Five** top-level asset-class tabs (Currencies added 2026-09-05 — originally four), each
@@ -40,10 +63,10 @@ color-accented for quick visual orientation:
 | Asset class | Sub-tabs | Data status |
 |---|---|---|
 | **Equities** | Stocks, Golden Breakout, Sectoral, Sectoral Breakout, Market Breadth | **2,138 stocks**, with 5-year price history backfilled for **2,089** of them (§9). 120 sectoral indices build from it |
-| **Commodities** | Base data, Golden Breakout | Real universe forthcoming (§3.2) |
+| **Commodities** | Base data, Golden Breakout | **26 instruments**, real 5-year history, live and published nightly (§9) |
 | **Currencies** | Base data, Golden Breakout | Real, verified universe (27 instruments, §9); accent teal (`#2DB9A3`), locked 2026-09-05 |
-| **Global Indices** | Base data, Golden Breakout | Real universe forthcoming (§3.2) |
-| **Crypto** | Base data, Golden Breakout | Real universe forthcoming (§3.2) |
+| **Global Indices** | Base data, Golden Breakout | **23 instruments**, real 5-year history, live and published nightly (§9) |
+| **Crypto** | Base data, Golden Breakout | **24 instruments**, real 5-year history, live and published nightly — 3 corrected and 2 removed on 2026-09-09 after a verification pass (§9) |
 
 Equities uses a specialized, fully-featured screen (watchlists, universe management,
 alerts, fundamentals). Commodities/Currencies/Indices/Crypto share one **generic,
@@ -1033,9 +1056,15 @@ with the project's cost/ops priorities throughout. Not yet built.
   (now a 6-month, ~$200 expiring credit for new accounts, not a permanent free tier),
   and its billing/setup complexity (6 separate billing dimensions on RDS, VPC/IAM setup)
   is a poor fit for this project's stated priorities.
-- **Compute host:** DigitalOcean VPS, ~$5–6/month, running the Node.js cron pipeline.
+- **Compute host:** ~~DigitalOcean VPS, ~$5–6/month~~ — **GitHub Actions since 2026-09-09**
+  (§7.3). The repository is public, so the minutes are free; the pipeline commits
+  nothing, so §7.3's original objection no longer applies. DigitalOcean is deferred,
+  not cancelled: it is the fallback if Yahoo ever throttles GitHub's shared ranges.
 - **Notifications:** email — quarterly universe-review prompts, annual fundamentals
   completion, and (via `fetch_job_log`) failure alerts for the daily/quarterly jobs.
+  **Built 2026-09-16 (§11e)**, on two independent channels, because the job-failure
+  hook cannot fire for a job that never runs. `fetch_job_log` is at last read by
+  something: both `db_report.mjs` and the watchdog.
 
 ### 6.6 Access control & analytics (locked)
 **Meridian is not public.** Nothing in the architecture above includes access control by
@@ -1343,8 +1372,11 @@ Also required, and not obvious: Supabase → Authentication → **URL Configurat
 the Vercel URL as Site URL and in Redirect URLs. Left at its default the magic link
 redirects to `http://localhost:3000` and fails on any machine with nothing running there.
 
-Still to come: DigitalOcean (the nightly job has nowhere to run yet), PostHog, Resend, and
-the domain.
+Still to come, as of 2026-09-16: **PostHog**, **Resend** (the code is written and wired
+— it needs an account, an API key, and the two repository secrets named in §11e), and
+**the domain**. DigitalOcean is no longer on this list: the nightly job runs on GitHub
+Actions (§7.3), so there is nothing to provision unless Yahoo starts throttling
+GitHub's shared ranges.
 
 #### Region (locked 2026-09-07)
 
@@ -1599,8 +1631,11 @@ For quick reference; each item traces to a fuller explanation above.
       since `golden_breakout_candidates` keys on a `universe_id` that industries do not
       have. Noted here so the lock and the code agree on paper. (Audit 2026-09-09.)
 - [x] Database: Supabase (Postgres, free tier)
-- [x] Compute host: DigitalOcean VPS (~$5–6/mo)
-- [x] Notifications: email
+- [x] Compute host: **GitHub Actions** (changed 2026-09-09; §7.3 records the reversal).
+      DigitalOcean deferred as the fallback if Yahoo throttles GitHub's ranges
+- [x] Notifications: email — **built 2026-09-16**, two channels (§11e): a failure hook
+      on the nightly job, and an independent watchdog cron that checks how old the
+      published data is, because the first cannot fire for a job that never runs
 - [x] Table schema: as specified in §6.4
 - [x] Fundamentals/price source: Yahoo Finance (Trendlyne dropped — API-vs-manual
       status was never resolved, and became moot)
@@ -1626,16 +1661,76 @@ For quick reference; each item traces to a fuller explanation above.
       feature, never deployed to invited users; minimum 200 trading days of history for
       universe inclusion (§3.1), IPOs/short-history scrips excluded outright
 - [x] Frontend hosting: Vercel, free tier
-- [x] Notification email provider: Resend, free tier
+- [x] Notification email provider: Resend, free tier — **wired 2026-09-16**; the shared
+      sender needs no DNS, so the domain below is not a prerequisite for alerts to the
+      owner's own address. Awaiting `RESEND_API_KEY` and `ALERT_EMAIL` as repo secrets
 - [x] Schema and RLS verified by execution, not by reading — `verify_rls.sql`, §6.6
 - [x] Region: Supabase Mumbai `ap-south-1`, DigitalOcean Bangalore `BLR1` — §6.8
 - [x] Full tooling & infrastructure list: §6.8
 - [x] Sign-in method per account: GitHub for Vercel and Supabase, email + independent 2FA
       for DigitalOcean and the domain registrar — §6.8
 
+**Added 2026-09-11 → 2026-09-16, from taking the pipeline live (§11c–§11f):**
+
+- [x] Price retention: 1,100 days, pruned nightly, floor of 900 — the table stays flat
+      instead of growing ~112 MB a year (§11b). Shared with the 800-day compute window
+      as one constant so the margin between them cannot silently close
+- [x] Equity tickers resolved once against Yahoo and committed
+      (`meridian-yahoo-tickers.csv`), never rediscovered nightly — ISINs are not Yahoo
+      tickers, which is what made the first scheduled run impossible (§11c)
+- [x] Every paged read declares a total order, unique per row. A read without one
+      returns the right number of rows and the wrong ones (§11c)
+- [x] Prices round through `rPrice`, not `r4` — four decimals cannot hold an instrument
+      trading at $0.000005, and a wider column does not help a value already destroyed
+      in JavaScript (§11c)
+- [x] Bars inside a four-day settlement window are rewritten, not judged: the job runs
+      while New York is mid-session, so its newest non-equity bars are provisional
+      (§11c)
+- [x] The deep re-pull cap scales with arrears and is bounded by a share of the
+      universe (20% in one night), not by a flat count that assumes the job ran
+      yesterday (§11c)
+- [x] The workbook builds from the database, never from the committed CSVs, so it and
+      the screens cannot disagree by vintage (§11d)
+- [x] Alerting degrades rather than lies: unconfigured, it still checks and still fails
+      loudly; broken, it cannot disguise the failure it was reporting (§11e)
+- [x] Every snapshot table is cleared before it is written, on a column it actually has
+      (`meridian-schema.js`, §11f)
+- [x] `check_pipeline.mjs` runs first in the nightly job — seconds, no network, no
+      database, no secret. Every check negative-tested by reverting the fix it covers
+
 ---
 
 ## 9. Open Items — Not Yet Resolved
+*(Reviewed 2026-09-16. Items resolved since the last review are struck through and kept,
+not deleted — the reasoning is usually the useful part.)*
+
+**Resolved 2026-09-11 → 2026-09-16, recorded in full in §11c–§11f:**
+
+- ~~The nightly pipeline has never completed.~~ Green end to end, unattended, since
+  2026-09-16. Five defects, each invisible in its own output (§11c, §11d, §11f).
+- ~~Nothing tells the owner when the pipeline stops.~~ Two alert channels (§11e).
+  *Blocked only on two repository secrets — see §8.*
+- ~~The workbook is twelve days behind the screens and drifting.~~ Both build from the
+  same rows over the same window (§11d).
+- ~~The database has no retention policy and nothing compares its size to a limit.~~
+  1,100-day retention pruned nightly, capacity checked with a measured trajectory
+  (§11b).
+- ~~Password recovery was never built.~~ `SetPassword.jsx`, shipped and covered by two
+  production checks.
+
+**Still open, and what each is waiting on:**
+
+- **Egress is the last unmeasured ceiling.** Supabase's free tier allows 5 GB/month and
+  nothing measures it. Every other quota now has a gauge; this one has a number in
+  prose, which is exactly the state §11b's incident began from. Not yet designed.
+- **The research sandbox** (five years of history, queryable, reachable from anywhere)
+  — discussed 2026-09-15, recommendation Colab + Parquet with a DuckDB-WASM page if it
+  needs to work phone-first. Not built, and deliberately not started while the pipeline
+  was still failing.
+- **Append-only nightly price history to git** — designed and measured, not built. It
+  was gated on the nightly job being proven, which it now is.
+- **PostHog, the consent gate, and a domain name** — §8 locks all three; none is built.
+
 
 0. **Equity universe delivered and verified (2026-09-06)** — `meridian-company-master-2138.csv`,
    2,138 stocks, converted from a Trendlyne extract (2,165 supplied, less 27 REITs/InvITs
@@ -1881,8 +1976,9 @@ For quick reference; each item traces to a fuller explanation above.
 5. **Whether a genuine, non-mirrored bearish/short signal gets built eventually** —
    shelved, not abandoned (§4.3.2).
 6. ~~Where the Meridian frontend itself gets served from in production.~~ **Resolved
-   (2026-09-05): Vercel**, free tier. The DigitalOcean VPS (§6.5) stays scoped to the
-   cron pipeline only. Full tooling list: §6.8.
+   (2026-09-05): Vercel**, free tier. The cron pipeline was scoped to a DigitalOcean VPS
+   at the time; it runs on GitHub Actions instead (§7.3, 2026-09-09) and DigitalOcean is
+   not currently provisioned at all. Full tooling list: §6.8.
 7. **PostHog event instrumentation is not yet scoped.** Which specific actions get
    tracked (which tabs, which interactions) beyond the automatic visitor/time-on-site
    metrics has not been defined — a real, small design task, not just a config setting.
@@ -1975,7 +2071,7 @@ be the authoritative list of what belongs in the GitHub repository.
 | Tooling | `fetch_prices.py` | The bulk historical fetcher (§3.4's one-time backfill and quarterly re-pull). Not the daily incremental job, which is separate engineering (§7.3) |
 | Output | `meridian-engine.js` | **The computation engine** — all 22 pure functions, imported by both `meridian.jsx` and the production pipeline so neither holds a copy (§6.2) |
 | Tooling | `check_data_integrity.py` | Fast guards over the committed data — every assertion corresponds to a bug that actually happened (float BSE codes, phantom trading days, non-positive adjusted prices). Run in CI on every push |
-| Tooling | `.github/workflows/` | `data-integrity.yml` (every push), `port-parity.yml` and `workbook.yml` (both path-scoped) |
+| Tooling | `.github/workflows/` | **Seven.** `data-integrity.yml` (every push), `port-parity.yml`, `workbook.yml` and `rls.yml` (path-scoped), `nightly.yml` (the production pipeline, 14:30 UTC weekdays), `watchdog.yml` (03:30 UTC daily, §11e), `maintenance.yml` (`workflow_dispatch` only — report / reload / republish / prune, the laptop-free operating surface) |
 | Tooling | `probe_corporate_actions.py` | Measures corporate-action frequency and restatement magnitude against the live API — the evidence §3.5's detect-and-isolate design is sized from. Re-run if the universe changes materially |
 | Tooling | `load_supabase.mjs` | One-time initial load of the CSVs into Supabase — resumable, idempotent, streamed. `--dry-run` shapes every row without sending it, so the output can be COPYed into a real Postgres to prove it fits |
 | Tooling | `verify_load.sql` | Post-load check in the SQL Editor — 13 counts the CSVs and `check_data_integrity.py` already agree on |
@@ -1988,6 +2084,30 @@ be the authoritative list of what belongs in the GitHub repository.
 | Input | `meridian-{commodities,currencies,indices,crypto}-prices.csv` | **Real 5-year daily history for all four non-equity classes** (2026-09-09): 137,025 rows, 102 instruments, adjusted, dated in each exchange's own timezone. Replaces the synthetic samples |
 | Tooling | `fetch_asset_prices.py` | The non-equity backfill. Sibling of `fetch_prices.py`, kept separate because these carry explicit Yahoo tickers and four different trading calendars |
 | Input | `meridian-commodities-master.csv` | Real, verified universe (26 instruments after CANOLA was removed — see below) |
+
+**Added 2026-09-09 → 2026-09-16 — the production pipeline and its guards.** The
+inventory above predates all of it.
+
+| Type | File | What it is |
+|---|---|---|
+| Output | `meridian-io.js` | **Shared pipeline plumbing** (§11a): CSV reading, numeric coercion, transient-failure retry, the paged reads (`readAll`, `readAllChunked` — both of which now *require* a total order, §11c), `readEquityPrices`, and the retention/compute-window constants that must not drift apart |
+| Output | `meridian-detect.js` | The two restatement detectors and the deep-re-pull cap, kept apart from the job so they can be tested with no network (§11c) |
+| Output | `meridian-health.js` | `collectHealth` (touches the database, does not judge) and `evaluateHealth` (judges, touches nothing). Shared by the capacity report and the watchdog so they cannot disagree about whether Meridian is healthy (§11e) |
+| Output | `meridian-schema.js` | The snapshot tables and the column each is cleared by. Exists because a predicate valid for four tables out of five failed on the fifth, and the fifth was quietly excluded (§11f) |
+| Tooling | `daily_fetch.mjs` | **The nightly price job** (§3.5): a 1-month sweep over every instrument, then a deep re-pull only for those whose history actually moved. Carries the budgets, heartbeats, HTTP tally and refusals that made its failures diagnosable |
+| Tooling | `compute_and_publish.mjs` | Recomputes every screen from the database (`--from-db`) and republishes all five snapshot tables. Refuses to publish if the parity self-check finds a column empty on every row |
+| Tooling | `build_workbook.mjs` | Stage 1 of the workbook. `--from-db` since 2026-09-16 — without it the workbook republished the backfill every night while reporting success (§11d) |
+| Tooling | `publish_workbook.mjs` | Uploads `meridian.xlsx` to Supabase Storage |
+| Tooling | `resolve_tickers.mjs` | Resolved all 2,138 equity ISINs against Yahoo, four candidates each, once. Its output is committed data, not a nightly cost |
+| Input | `meridian-yahoo-tickers.csv` | **ISIN → Yahoo ticker**, 2,090 rows. 1,790 route `.NS` and 300 `.BO`; 48 have no listing that returns data and are skipped by name rather than retried into 404s |
+| Tooling | `prune_prices.mjs` | Retention (§11b). Deletes date-slice by date-slice so one big WAL cannot be the thing that fills a full disk. Refuses below 900 days or above half the table |
+| Tooling | `db_report.mjs` | Rows, per-class freshness, recent jobs, byte sizes, redundant indexes — and a **trajectory** with bytes/row measured from the live database, not assumed. Exits non-zero past 80% |
+| Tooling | `notify.mjs` | The alerts (§11e). `--failure` for the nightly hook, `--watchdog` for the independent cron, `--dry-run` to see the mail without sending it |
+| Tooling | `check_pipeline.mjs` | **58 self-checks**, no network or database, run first in the nightly job. Its fake database reproduces Postgres's synchronised-seqscan behaviour, which is what makes the paging checks real |
+| Migration | `supabase-migration-00{2..6}-*.sql` | UI fields; sectoral parity (the table held 13 of 26 columns); price precision (`numeric(12,4)` stored SHIB as a literal zero); the capacity helper functions; the redundant-index drop that reclaimed 137 MB |
+| Migration | `cleanup-005-obsolete-crypto.sql` | Removes the crypto instruments a verification pass found to be the wrong asset entirely — UNI-USD was UNICORN Token, CC-USD was CloudCoin |
+| Tooling | `verify_screens.sql` | 21 invariants over the published tables, rewritten 2026-09-09 after 3 of the originals were found to be asserting things that were no longer true |
+| Output | `web/src/SetPassword.jsx` | The set-password screen. The 2026-09-07 switch from magic-link to password added `signInWithPassword` and never built the way back (§11 password recovery) |
 | Input | `meridian-currencies-master.csv` | Real, verified universe (27 instruments) — new asset class; no price file yet, synthetic or real |
 | Input | `meridian-indices-master.csv` | Real, verified universe (23 instruments) — `-prices-sample.csv` remains synthetic, real price history not yet sourced |
 | Input | `meridian-crypto-master.csv` | Real, verified universe (26 instruments) — `-prices-sample.csv` remains synthetic, real price history not yet sourced |
@@ -2316,35 +2436,91 @@ it prunes on the date in the filename rather than `created_at` (a re-published
 file would otherwise look young and survive). A failed prune exits 0 — the upload
 already succeeded, and failing there would mask a good publish.
 
+### 11.5b The pipeline self-checks — `check_pipeline.mjs` (added 2026-09-16)
+
+58 checks, no network, no database, no secret, run as the first step of the nightly
+job. They exist because the defects of §11c–§11f were all invisible in their own
+output: a paged read with the right row count and the wrong rows, a workbook that
+rebuilt and republished the same numbers, a table that logged `500/500` while holding
+508.
+
+Two things make them more than decoration:
+
+- **Every check is negative-tested** by reverting the fix it covers and confirming it
+  fails. That found one check that had its settlement sentinel inverted and was passing
+  while comparing nothing at all.
+- **The fake database is hostile.** It serves each query from a different rotation of
+  the table, which is what `synchronize_seqscans` does in practice. The rotation is
+  811, not a token 7, because a small one models an *unordered* read but not one
+  ordered by a non-unique column — a group smaller than a page comes back correct
+  however it is rotated, and two checks passed on known-broken code until that was
+  fixed.
+
 ### 11.6 The sequence, end to end
 
 **Today (manual):** upload CSVs → `computeAll` → `computeRSUniverse` →
 `computeFundamentalScores` → screens render; Sectoral and Breadth computed lazily
 when their tabs open.
 
-**In production (§6.3), the same engine, different edges:**
+**In production — `.github/workflows/nightly.yml`, 14:30 UTC weekdays.** Verified green
+end to end on 2026-09-16; measured times are from that run.
 
 ```
-fetch_prices.py  →  clean_price_calendar.py  →  check_data_integrity.py
-                 ↓
-        prices_daily / fundamentals_annual  (Supabase)
-                 ↓
-   Node job imports meridian-engine.js unchanged:
-     computeAll → computeRSUniverse → computeFundamentalScores
-                → computeSectoralSeries → computeBreadthSeries
-                → runGoldenBreakoutScreener
-                 ↓
-   staging tables → single-transaction swap (§6.3)
-                 ↓
-        Meridian reads the results. It computes nothing.
-                 ↓
-   build_workbook.mjs → build_workbook.py → verify_workbook.py
-                 ↓
-   publish_workbook.mjs → Supabase Storage → signed-URL download in the app
+check_pipeline.mjs                          1s   58 checks, no network, no database
+        ↓                                        (first, so a known-bad build wastes no night)
+daily_fetch.mjs                            20m   sweep 2,238 at range=1mo
+   ├─ guard: >50% must hold history              (refuses to re-pull an emptied table)
+   ├─ detect: unabsorbed event | restatement     (meridian-detect.js)
+   ├─ append new + rewrite unsettled bars        (4-day settlement window)
+   └─ deep re-pull, capped by arrears            (~3/night at steady state)
+        ↓
+   prices_daily  (Supabase)
+        ↓
+compute_and_publish.mjs --from-db           7m   reads an 800-day window, blocked by
+   imports meridian-engine.js unchanged:         instrument (readAllChunked)
+     computeAll → computeRSUniverse
+     → computeFundamentalScores
+     → computeSectoralSeries → computeBreadthSeries
+     → runGoldenBreakoutScreener
+        ↓
+   clear + write all five snapshot tables        (meridian-schema.js)
+        ↓
+   Meridian reads the results. It computes nothing.
+        ↓
+build_workbook.mjs --from-db  →  build_workbook.py  →  verify_workbook.py   10m
+   the SAME rows over the SAME window, so the workbook and the screens
+   cannot disagree by vintage (§11d)
+        ↓
+publish_workbook.mjs → Supabase Storage → signed-URL download in the app
+        ↓
+prune_prices.mjs        retention: 1,100 days, one aged-out day per night
+        ↓
+db_report.mjs           rows, freshness, size, trajectory — exits non-zero past 80%
+        ↓
+notify.mjs --failure    only `if: failure()`, and `continue-on-error` so a broken
+                        alerter cannot disguise which step actually failed
 ```
 
-The engine is identical in both. Only what feeds it and what consumes it changes
-— which is the whole point of §6.2, and what `verify_port` exists to keep honest.
+**And separately, on its own cron** — `watchdog.yml`, 03:30 UTC daily, because every
+line above is silent when the job does not run at all:
+
+```
+notify.mjs --watchdog   how old is the data on the screen?
+                        → stale, or a failed job log, or past 80% capacity → email
+                        → exits non-zero either way, so a red run is the fallback
+                          channel when the mail channel is the broken thing
+```
+
+The engine is identical in the prototype and in production. Only what feeds it and
+what consumes it changes — which is the whole point of §6.2, and what `verify_port`
+exists to keep honest.
+
+**Two things the old version of this diagram got wrong**, both worth naming because
+they were true when it was written and quietly stopped being true: it showed
+`fetch_prices.py` feeding the nightly job (that is the one-time backfill; the nightly
+job is `daily_fetch.mjs`), and it showed a staging-table swap that was never built —
+the publish is a clear-then-write per table, which is why §11f's missing `clear` call
+mattered.
 
 ---
 
