@@ -94,6 +94,17 @@ export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  */
 export const DEFAULT_RETENTION_DAYS = 1100;
 
+/**
+ * How much history the model reads. Kept beside the retention window because what
+ * matters is the gap between them: 800 CALENDAR days is only ~550 trading days, and
+ * the breadth series alone is 500 trading days long. Retention has to stay well clear
+ * of this or MA200, the 252-day RS lookback and the breadth series all quietly
+ * shorten, with nothing downstream complaining -- they would simply compute different
+ * numbers. prune_prices.mjs enforces the floor; having both constants in one place is
+ * what makes the relationship visible at all.
+ */
+export const DEFAULT_DB_WINDOW_DAYS = 800;
+
 // ---------------------------------------------------------------- paged reads
 export const PAGE = 1000;
 
@@ -196,6 +207,47 @@ export async function readAllChunked(db, table, columns, { idColumn, ids, orderB
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------- price reads
+/**
+ * The trailing window of EQUITY bars, keyed by ISIN, in the shape every consumer of
+ * prices in this pipeline expects.
+ *
+ * Shared because both things that compute the model need it and the committed CSVs
+ * are not an answer for either. Those files are frozen at the 2026-09-06 backfill and
+ * will never advance: computing from them republishes the same screens every night
+ * while reporting success, which is exactly what the workbook did until 2026-09-16 --
+ * the app's screens were current and the workbook a reader could download was twelve
+ * days stale and drifting, with nothing anywhere saying so.
+ *
+ * Blocked by instrument rather than paged straight through: see readAllChunked. A
+ * flat offset walk over the whole table crosses the statement timeout around page 800.
+ */
+export async function readEquityPrices(db, { windowDays, onProgress } = {}) {
+  const cutoff = new Date(Date.now() - windowDays * 86400_000).toISOString().slice(0, 10);
+  const isinById = {};
+  await readAll(db, "universe", "id,identifier", {
+    orderBy: ["id"],
+    filter: (q) => q.eq("asset_class", "equity"),
+    onPage: (rows) => rows.forEach((r) => { isinById[r.id] = r.identifier; }),
+  });
+  const ids = Object.keys(isinById).map(Number);
+  const prices = [];
+  await readAllChunked(db, "prices_daily", "universe_id,trade_date,high,low,close,volume", {
+    idColumn: "universe_id", ids, orderBy: ["universe_id", "trade_date"],
+    filter: (q) => q.gte("trade_date", cutoff),
+    onPage: (data) => {
+      for (const r of data) {
+        const isin = isinById[r.universe_id];
+        if (!isin) continue;
+        prices.push({ ISIN: isin, Date: r.trade_date, High: num(r.high), Low: num(r.low),
+                      Close: num(r.close), Volume: num(r.volume) });
+      }
+      if (onProgress) onProgress(prices.length);
+    },
+  });
+  return { prices, cutoff, instrumentCount: ids.length };
 }
 
 // ---------------------------------------------------------------- retry

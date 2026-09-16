@@ -15,7 +15,8 @@
 import { arrearsInstrumentDays, deepRepullCap, medianNewestStored, restatementOf,
          SETTLEMENT_DAYS, tradingArrearsSince, unabsorbedEventDate,
          unsettledFrom } from "./meridian-detect.js";
-import { PAGE, r4, readAll, readAllChunked, rPrice } from "./meridian-io.js";
+import { DEFAULT_DB_WINDOW_DAYS, DEFAULT_RETENTION_DAYS, PAGE, r4, readAll,
+         readAllChunked, readEquityPrices, rPrice } from "./meridian-io.js";
 
 let failed = 0;
 // Awaited, always. An earlier draft called fn() and tested its return value, which
@@ -61,14 +62,29 @@ function fakeDb(rows, { stable = false } = {}) {
         range(from, to) {
           queries++;
           let view = rows.filter(q._pred);
+          // The rotation happens FIRST, and it happens whether or not an order was
+          // applied. Ordering by a non-unique column is not a total order: rows that
+          // tie are still free to come back in any sequence, so `.order("universe_id")`
+          // over many bars per instrument has exactly the bug `.order()` was meant to
+          // fix. Rotating before a stable sort is what makes that visible here --
+          // sorting the array as given would quietly preserve its natural order and
+          // the check would pass on code that fails in production.
+          if (!stable) {
+            // A LARGE shift, not a token one. A rotation of 7 moves rows around
+            // inside whichever group they already sat in, and a group that fits
+            // entirely within one page then comes back correct no matter what -- so a
+            // small shift models the hazard for unordered reads and silently fails to
+            // model it for reads ordered by a non-unique column. 811 is prime and
+            // comfortably larger than any single instrument's run of bars here, so
+            // ties genuinely cross page boundaries.
+            const shift = (queries * 811) % Math.max(view.length, 1);
+            view = [...view.slice(shift), ...view.slice(0, shift)];
+          }
           if (q._order.length) {
             view = [...view].sort((a, b) => {
               for (const c of q._order) { if (a[c] !== b[c]) return a[c] < b[c] ? -1 : 1; }
-              return 0;
+              return 0;                                  // a tie stays where it landed
             });
-          } else if (!stable) {
-            const shift = (queries * 7) % Math.max(view.length, 1);   // a different start each time
-            view = [...view.slice(shift), ...view.slice(0, shift)];
           }
           return Promise.resolve({ data: view.slice(from, to + 1), error: null });
         },
@@ -134,6 +150,63 @@ await check("readAllChunked returns every row for every id exactly once", async 
   if (got.length !== rows.length) return `got ${got.length} rows, want ${rows.length}`;
   if (distinct !== rows.length) return `${rows.length - distinct} rows duplicated or missing`;
   return null;
+});
+
+// ---------------------------------------------------------------- shared price read
+console.log("\nequity price read");
+
+// universe: 3 equities and 1 non-equity, spanning two pages of bars.
+const priceFixture = [];
+const universeRows = [
+  { id: 1, identifier: "INE397D01024", asset_class: "equity" },
+  { id: 2, identifier: "INE467B01029", asset_class: "equity" },
+  { id: 3, identifier: "INE009A01021", asset_class: "equity" },
+  { id: 9, identifier: "GC=F", asset_class: "commodity" },
+];
+for (const u of universeRows) {
+  for (let d = 0; d < 700; d++) {
+    const date = new Date(Date.UTC(2026, 0, 1) + d * 86400_000).toISOString().slice(0, 10);
+    priceFixture.push({ universe_id: u.id, trade_date: date,
+                        high: 2, low: 1, close: 1.5, volume: 10 });
+  }
+}
+// One fakeDb per TABLE, created once and reused, so its query counter advances across
+// the pages of a single read. Built fresh per table on every call at first, which
+// reset the counter and handed every page the same rotation -- a hostile fake that
+// behaved perfectly, and three checks that passed on code known to be broken.
+function priceDb() {
+  const dbs = { universe: fakeDb(universeRows), prices_daily: fakeDb(priceFixture) };
+  return { from: (table) => dbs[table].from() };
+}
+
+await check("reads every bar for every equity, exactly once", async () => {
+  const { prices, instrumentCount } = await readEquityPrices(priceDb(),
+    { windowDays: 100_000 });
+  if (instrumentCount !== 3) return `${instrumentCount} equities, want 3`;
+  const seen = new Set(prices.map((r) => `${r.ISIN} ${r.Date}`));
+  if (prices.length !== 2100) return `${prices.length} rows, want 2100`;
+  if (seen.size !== 2100) return `${2100 - seen.size} rows duplicated or missing`;
+  return null;
+});
+
+await check("keys rows by ISIN, not by universe_id", async () => {
+  const { prices } = await readEquityPrices(priceDb(), { windowDays: 100_000 });
+  const isins = new Set(prices.map((r) => r.ISIN));
+  return eq([...isins].sort(), ["INE009A01021", "INE397D01024", "INE467B01029"], "ISINs");
+});
+
+await check("leaves the non-equity classes alone", async () => {
+  const { prices } = await readEquityPrices(priceDb(), { windowDays: 100_000 });
+  return prices.some((r) => r.ISIN === "GC=F") ? "a commodity came back with the equities" : null;
+});
+
+await check("the retention window clears the model's read window", () => {
+  // Not a style point: 800 CALENDAR days is ~550 trading days and the breadth series
+  // alone is 500 of them. Pruning into the read window shortens MA200, the 252-day RS
+  // lookback and breadth with no error anywhere.
+  const margin = DEFAULT_RETENTION_DAYS - DEFAULT_DB_WINDOW_DAYS;
+  return margin >= 250 ? null
+    : `retention ${DEFAULT_RETENTION_DAYS} leaves only ${margin} days over the ${DEFAULT_DB_WINDOW_DAYS}-day read window`;
 });
 
 // ---------------------------------------------------------------- detector 1

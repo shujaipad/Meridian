@@ -14,14 +14,27 @@
  * same code the app runs; build_workbook.py adds formulas only where they
  * recalculate something meaningful and cannot disagree with the model.
  *
- * Usage: node build_workbook.mjs [--out workbook-data.json]
+ * READ THE DATABASE, NOT THE CSVs. --from-db is what the nightly job passes, and
+ * without it this step is theatre: the committed price history is frozen at the
+ * 2026-09-06 backfill, so the workbook rebuilt, republished and reported success
+ * every night while emitting the same numbers. On 2026-09-16 the app's screens were
+ * as of that morning and the workbook a reader could download was as of 2026-09-04,
+ * twelve days behind and widening, with nothing anywhere saying so. The nightly
+ * workflow already carried that warning in a comment above the compute step; the
+ * workbook was doing the very thing it warned about.
+ *
+ * It also makes the two agree by construction. The workbook and the screens now
+ * compute from the same rows over the same window, so a number that differs between
+ * them is a real disagreement rather than a difference of vintage.
+ *
+ * Usage: node build_workbook.mjs [--from-db] [--out workbook-data.json]
  */
 
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { num, r2 } from "./meridian-io.js";
+import { DEFAULT_DB_WINDOW_DAYS, num, r2, readCSV, readEquityPrices } from "./meridian-io.js";
 
 import {
   computeAll,
@@ -38,33 +51,18 @@ import {
 const BASE = dirname(fileURLToPath(import.meta.url));
 const OUT = join(BASE, "workbook-data.json");
 
-// 75 master rows carry quoted fields with embedded commas ("Food, Beverages &
-// Tobacco"), so a split(",") would corrupt them.
-function parseCSV(text) {
-  const rows = [];
-  let field = "", row = [], q = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (q) {
-      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; }
-      else field += c;
-    } else if (c === '"') q = true;
-    else if (c === ",") { row.push(field); field = ""; }
-    else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
-    else if (c !== "\r") field += c;
-  }
-  if (field || row.length) { row.push(field); rows.push(row); }
-  const head = rows.shift();
-  return rows.filter((r) => r.length === head.length && r.some((v) => v !== ""))
-             .map((r) => Object.fromEntries(head.map((h, i) => [h, r[i]])));
-}
+// The private CSV parser that used to live here was a fourth copy of readCSV, kept
+// only because it predated meridian-io.js. §11a is about exactly this: copies drift
+// silently, and the drift is always found in production. Verified behaviour-preserving
+// by output diff -- the payload is byte-identical before and after the swap.
 
+const FROM_DB = process.argv.includes("--from-db");
 
 console.error("reading inputs...");
-const master = parseCSV(readFileSync(join(BASE, "meridian-company-master-2138.csv"), "utf8"))
+const master = readCSV(join(BASE, "meridian-company-master-2138.csv"))
   .map((m) => ({ ...m, MarketCap: num(m.MarketCap) }));
 
-const fundamentals = parseCSV(readFileSync(join(BASE, "meridian-fundamentals-742.csv"), "utf8"))
+const fundamentals = readCSV(join(BASE, "meridian-fundamentals-742.csv"))
   .map((f) => ({
     ISIN: f.ISIN, FY: f.FY,
     ROE_Pct: num(f.ROE_Pct), ROCE_Pct: num(f.ROCE_Pct), DebtEquity: num(f.DebtEquity),
@@ -72,14 +70,47 @@ const fundamentals = parseCSV(readFileSync(join(BASE, "meridian-fundamentals-742
   }));
 
 const prices = [];
-for (const f of readdirSync(BASE).filter((f) => /^meridian-price-history-2090-part\d+of3\.csv$/.test(f)).sort()) {
-  for (const r of parseCSV(readFileSync(join(BASE, f), "utf8"))) {
-    prices.push({ ISIN: r.ISIN, Date: r.Date, High: num(r.High), Low: num(r.Low),
-                  Close: num(r.Close), Volume: num(r.Volume) });
+if (FROM_DB) {
+  const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env;
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    // Named here rather than left to fail inside the client: --from-db silently
+    // falling back to the CSVs is the failure this flag exists to prevent, so it
+    // refuses instead.
+    console.error("--from-db needs SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
+    process.exit(1);
+  }
+  const { createClient } = await import("@supabase/supabase-js");
+  const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
+  let mark = 0;
+  const { prices: rows, cutoff, instrumentCount } = await readEquityPrices(db, {
+    windowDays: DEFAULT_DB_WINDOW_DAYS,
+    onProgress: (n) => {
+      if (n - mark >= 200_000) { mark = n; console.error(`    ${n.toLocaleString()} rows`); }
+    },
+  });
+  console.error(`  read prices_daily since ${cutoff} for ${instrumentCount} equities`);
+  prices.push(...rows);
+} else {
+  for (const f of readdirSync(BASE).filter((f) => /^meridian-price-history-2090-part\d+of3\.csv$/.test(f)).sort()) {
+    for (const r of readCSV(join(BASE, f))) {
+      prices.push({ ISIN: r.ISIN, Date: r.Date, High: num(r.High), Low: num(r.Low),
+                    Close: num(r.Close), Volume: num(r.Volume) });
+    }
   }
 }
 const asOf = prices.reduce((m, r) => (r.Date > m ? r.Date : m), "");
-console.error(`  ${master.length} instruments, ${prices.length} price rows, as of ${asOf}`);
+console.error(`  ${master.length} instruments, ${prices.length.toLocaleString()} price rows`
+            + ` from ${FROM_DB ? "the database" : "the committed CSVs"}, as of ${asOf}`);
+
+// A workbook built from stale inputs is the defect this flag exists to fix, and it is
+// invisible in the output -- every sheet renders, every check passes, the date in the
+// header is simply old. So the staleness is asserted rather than trusted.
+const ageDays = Math.round((Date.now() - Date.parse(`${asOf}T00:00:00Z`)) / 86400_000);
+if (FROM_DB && ageDays > 7) {
+  console.error(`\n  newest bar is ${asOf}, ${ageDays} days old.`);
+  console.error("  prices_daily is behind; the daily fetch has not been landing.");
+  process.exit(1);
+}
 
 console.error("computing (same engine the app runs)...");
 const computed = computeAll(master, fundamentals, prices);
@@ -205,8 +236,11 @@ for (const [name, rows] of Object.entries({ stocks, breakout, sectoral, sectoral
   if (ragged) throw new Error(`${name}: ${ragged} ragged rows`);
 }
 
-writeFileSync(process.argv.includes("--out") ? process.argv[process.argv.indexOf("--out") + 1] : OUT,
-              JSON.stringify(payload));
-console.error(`wrote ${OUT}`);
+// The path actually written, not the default: the log line used to name OUT whatever
+// --out said, which reads as a silent no-op when the two differ.
+const outPath = process.argv.includes("--out")
+  ? process.argv[process.argv.indexOf("--out") + 1] : OUT;
+writeFileSync(outPath, JSON.stringify(payload));
+console.error(`wrote ${outPath}`);
 console.error(`  stocks ${stocks.length} | breakout ${breakout.length} | sectoral ${sectoral.length} `
             + `| sectoral breakout ${sectoralBreakout.length} | breadth ${breadth.length}`);

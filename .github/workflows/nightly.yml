@@ -97,11 +97,17 @@ jobs:
         timeout-minutes: 40
         run: node --max-old-space-size=6144 compute_and_publish.mjs --from-db
 
+      # --from-db here for the same reason as the step above, and it was missing for
+      # longer. The committed price CSVs are frozen at the backfill, so the workbook
+      # rebuilt and republished every night while emitting the same numbers: on
+      # 2026-09-16 the screens were current and the downloadable workbook was twelve
+      # days stale, with every check passing. Without the flag the script now refuses
+      # rather than quietly using the CSVs.
       - name: Build the workbook
         if: ${{ !inputs.dry_run }}
         timeout-minutes: 25
         run: |
-          node --max-old-space-size=6144 build_workbook.mjs
+          node --max-old-space-size=6144 build_workbook.mjs --from-db
           pip install --quiet -r requirements.txt
           python3 build_workbook.py
           python3 verify_workbook.py

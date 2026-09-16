@@ -42,7 +42,8 @@ import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { num, r2, r4, readAll, readAllChunked, readCSV, rPrice, withRetry } from "./meridian-io.js";
+import { DEFAULT_DB_WINDOW_DAYS, num, r2, r4, readAll, readAllChunked, readCSV,
+         readEquityPrices, rPrice, withRetry } from "./meridian-io.js";
 
 import {
   bandOfRSRating, closesByKeyFromPrices, computeAll, computeBreadthSeries,
@@ -61,7 +62,7 @@ const DRY = process.argv.includes("--dry-run");
 const FROM_DB = process.argv.includes("--from-db");
 // See the header: 800 calendar days ≈ 550 trading days, past the 500-bar breadth
 // window which is the longest lookback any live signal uses.
-const DB_WINDOW_DAYS = 800;
+const DB_WINDOW_DAYS = DEFAULT_DB_WINDOW_DAYS;   // shared with build_workbook.mjs
 const DRY_DIR = join(BASE, "dryrun-screens");
 
 const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env;
@@ -167,38 +168,19 @@ console.log(`  universe id map: ${Object.keys(ids).length} instruments`);
 // their own slice further down, because each has a separate calendar and its own
 // as-of date, and pooling them into one array would lose that distinction.
 if (FROM_DB) {
-  const cutoff = new Date(Date.now() - DB_WINDOW_DAYS * 86400_000).toISOString().slice(0, 10);
-  const isinById = {};
-  await readAll(db, "universe", "id,identifier", {
-    orderBy: ["id"],
-    filter: (q) => q.eq("asset_class", "equity"),
-    onPage: (rows) => rows.forEach((r) => { isinById[r.id] = r.identifier; }),
-  });
-  const equityIds = Object.keys(isinById).map(Number);
-  console.log(`  reading prices_daily since ${cutoff} for ${equityIds.length} equities ...`);
-  let n = 0;
-  // Blocked by instrument, not paged straight through the whole table: see
-  // readAllChunked. A flat offset walk over 2.1M rows dies on the statement timeout
-  // around page 800, because each page re-scans everything before it.
-  await readAllChunked(db, "prices_daily", "universe_id,trade_date,high,low,close,volume", {
-    idColumn: "universe_id", ids: equityIds, orderBy: ["universe_id", "trade_date"],
-    filter: (q) => q.gte("trade_date", cutoff),
-    onPage: (data) => {
-      for (const r of data) {
-        const isin = isinById[r.universe_id];
-        if (!isin) continue;
-        prices.push({ ISIN: isin, Date: r.trade_date, High: num(r.high), Low: num(r.low),
-                      Close: num(r.close), Volume: num(r.volume) });
-      }
-      n += data.length;
-      // Newline, not \r. Actions captures stdout through a pipe rather than a TTY, so
-      // a carriage-return counter never redraws -- it just never appears, and a step
-      // killed mid-read leaves no record of how far it got. Same defect as the daily
-      // fetch's progress bar, same fix.
-      if (n % 200000 === 0) console.log(`    ${n.toLocaleString()} rows`);
+  // Newline heartbeats, not \r. Actions captures stdout through a pipe rather than a
+  // TTY, so a carriage-return counter never redraws -- it just never appears, and a
+  // step killed mid-read leaves no record of how far it got.
+  let mark = 0;
+  const { prices: rows, cutoff, instrumentCount } = await readEquityPrices(db, {
+    windowDays: DB_WINDOW_DAYS,
+    onProgress: (n) => {
+      if (n - mark >= 200_000) { mark = n; console.log(`    ${n.toLocaleString()} rows`); }
     },
   });
-  console.log(`\n  ${prices.length.toLocaleString()} equity price rows from the database`);
+  console.log(`  read prices_daily since ${cutoff} for ${instrumentCount} equities`);
+  prices.push(...rows);
+  console.log(`  ${prices.length.toLocaleString()} equity price rows from the database`);
 }
 // Check that every EQUITY in the master is present, not that the row counts match.
 // The counts stopped matching the moment the four non-equity classes were added —

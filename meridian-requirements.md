@@ -2545,6 +2545,55 @@ fix it covers.
 
 ---
 
+## 11d. The workbook was reading frozen files
+*(2026-09-16)*
+
+The nightly pipeline ran green end to end for the first time on 2026-09-16 — and the
+workbook it published was as of **2026-09-04**, twelve days behind the screens beside
+it, with every check passing.
+
+`compute_and_publish.mjs` runs with `--from-db`. `build_workbook.mjs` had no such
+option: it read the committed price CSVs, which are frozen at the backfill and will
+never advance. So it rebuilt, reformatted, verified and republished every night while
+emitting the same numbers — and the gap widens by a day, every day, forever. The
+nightly workflow already carried the warning in a comment above the compute step
+("computing from them would republish the same screens every night while looking
+entirely healthy"); the workbook was doing precisely that, one step below.
+
+Three things came out of it.
+
+**The read is shared now.** `readEquityPrices` in `meridian-io.js` is the one
+implementation, used by both the compute step and the workbook. Copying the
+`readAllChunked` walk into a second script would have been the §11a mistake made
+deliberately, and the version being copied was three days old.
+
+**`--from-db` refuses rather than falls back.** Missing credentials exit 1. A flag
+whose failure mode is "quietly use the stale files" is the defect wearing a fix. The
+build also asserts its own freshness: with `--from-db`, a newest bar more than seven
+days old fails the step, because a stale workbook is invisible in its output — every
+sheet renders, every check passes, only the date in the header is old.
+
+**The workbook and the screens now agree by construction.** Both compute from the same
+rows over the same 800-day window, so a number that differs between them is a real
+disagreement rather than a difference of vintage. `DEFAULT_DB_WINDOW_DAYS` sits beside
+`DEFAULT_RETENTION_DAYS` for the same reason: what matters is the 300-day gap between
+them, and a check asserts it.
+
+The workbook's private CSV parser — a fourth copy of `readCSV`, kept only because it
+predated `meridian-io.js` — went with it. **Verified behaviour-preserving by output
+diff, not by inspection:** the 2,006,341-byte payload is byte-identical before and
+after, once the build timestamp is normalised.
+
+**One check got sharper along the way.** The fake database in `check_pipeline.mjs`
+rotated its rows by 7 between queries, which models an unordered read but not a read
+ordered by a *non-unique* column — a group smaller than a page comes back correct
+however it is rotated. Ordering by `universe_id` alone over many bars per instrument
+is the same bug in a hat, and the fake said it was fine. It rotates by 811 now, and
+ties genuinely cross page boundaries. Two checks that had been passing on known-broken
+code now fail on it.
+
+---
+
 ## 12. Source of Truth for Code
 
 `meridian.jsx` in this repository is the current, authoritative application source —
