@@ -65,19 +65,57 @@ function authErrorFromUrl() {
   return description || p.get("error") || "The link could not be used.";
 }
 
+// An INVITE link is not a sign-in, and treating it as one is a trap that closes behind
+// the user. Supabase's dashboard "Invite user" mails a link that establishes a real
+// session for an account with NO PASSWORD SET. Handled as an ordinary sign-in, the
+// invitee lands in the app, looks around, closes the tab — and can never get back in,
+// because the primary sign-in path is a password they were never asked to choose. The
+// failure is silent, it happens after they have already been let in, and it is
+// indistinguishable from success until their second visit.
+//
+// This reads `type` out of the fragment rather than waiting for an auth EVENT, because
+// which event Supabase fires for an invite is not something its documentation states —
+// and a fix that guesses at the event would be untestable against the real flow. The
+// fragment carries `type=invite` (or `recovery`, or `signup`) in every case, so this is
+// true whichever event arrives.
+const PROVISIONAL = new Set(["invite", "recovery", "signup"]);
+
+function authTypeFromUrl() {
+  const raw = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : "";
+  if (!raw) return null;
+  return new URLSearchParams(raw).get("type");
+}
+
+function provisionalFromUrl() {
+  const t = authTypeFromUrl();
+  return t ? PROVISIONAL.has(t) : false;
+}
+
+const invitedFromUrl = () => {
+  const t = authTypeFromUrl();
+  return t === "invite" || t === "signup";
+};
+
 function Root() {
   const [session, setSession] = useState(undefined); // undefined = still checking
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   // A recovery link signs the user in, but that session is provisional: the only thing
   // that should happen while it holds is choosing a new password.
-  const [recovering, setRecovering] = useState(false);
+  // Seeded from the URL so an invite is caught on first paint, before any event
+  // arrives. `authErrorFromUrl` clears the fragment, so this must read it first —
+  // ordering that is easy to get wrong and silent when you do.
+  const [recovering, setRecovering] = useState(provisionalFromUrl);
+  // An invite is someone's first sight of Meridian; a reset is not. The screen says so.
+  const [firstTime] = useState(() => invitedFromUrl());
   const [linkError] = useState(authErrorFromUrl);
 
   useEffect(() => {
     if (!supabase) return;
     supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null));
     const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
+      // PASSWORD_RECOVERY for a reset; the URL check above covers an invite, whichever
+      // event that turns out to fire.
       if (event === "PASSWORD_RECOVERY") setRecovering(true);
       setSession(s ?? null);
     });
@@ -102,7 +140,7 @@ function Root() {
     </Centered>;
   }
   if (session === undefined) return <Centered>Checking your session…</Centered>;
-  if (recovering) return <SetPassword onDone={() => setRecovering(false)} />;
+  if (recovering) return <SetPassword firstTime={firstTime} onDone={() => setRecovering(false)} />;
   if (session === null) return <Auth linkError={linkError} />;
 
   if (error) {

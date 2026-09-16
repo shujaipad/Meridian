@@ -30,7 +30,7 @@ const inputStyle = {
 // rule is visible before it is hit.
 const MIN_LENGTH = 6;
 
-export default function SetPassword({ onDone }) {
+export default function SetPassword({ onDone, firstTime = false }) {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [state, setState] = useState({ status: "idle" });
@@ -62,7 +62,13 @@ export default function SetPassword({ onDone }) {
           fontFamily: "'IBM Plex Serif', Georgia, serif", fontSize: 30, fontWeight: 600,
           letterSpacing: "-0.01em", color: C.gold, marginBottom: 4,
         }}>Meridian</div>
-        <div style={{ fontSize: 13, color: C.dim, marginBottom: 28 }}>Choose a new password</div>
+        <div style={{ fontSize: 13, color: C.dim, marginBottom: 28 }}>{
+          // "Choose a NEW password" is wrong for an invitee, who never had one -- it
+          // reads as though they have forgotten something, on the first screen they
+          // ever see of this tool.
+          firstTime ? "Set a password to finish setting up your account"
+                    : "Choose a new password"
+        }</div>
 
         {state.status === "done" ? (
           <div style={{

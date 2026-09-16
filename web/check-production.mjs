@@ -192,6 +192,39 @@ const recovery = await page.locator("body").innerText();
 check("recovery link shows the set-password screen", /Choose a new password/.test(recovery), true);
 check("set-password asks for confirmation", /Confirm it/.test(recovery), true);
 
+// --- invitation ---------------------------------------------------------------
+// Added 2026-09-16, the day the first outside users were invited.
+//
+// A dashboard invite mails a link that establishes a REAL session for an account with
+// no password set. Handled as an ordinary sign-in, the invitee lands in the app, looks
+// around, closes the tab, and can never get back in — the primary sign-in path is a
+// password nobody asked them to choose. The failure happens AFTER they are let in and
+// is indistinguishable from success until their second visit, which is why no existing
+// check saw it: every one of them asserts on a session that already works.
+//
+// Driven through the real URL fragment rather than a fixture hook, because the fix
+// deliberately does not depend on which auth event Supabase fires for an invite — that
+// is not something its documentation states, and a check that mocked the event would
+// be asserting my guess rather than the behaviour.
+for (const [type, expected] of [["invite", /Set a password to finish setting up/],
+                                ["recovery", /Choose a new password/]]) {
+  // goto() then reload(). A navigation that changes ONLY the fragment is a
+  // same-document navigation: React never remounts, the useState initialisers never
+  // re-run, and the page keeps whatever state the previous check left behind. That is
+  // how the first version of this passed its "does not open the screens" assertion --
+  // not because an invite is handled correctly, but because the recovery check before
+  // it had already put the app on the set-password screen. A check that passes for the
+  // wrong reason is the thing this file exists to avoid.
+  await page.goto(`${URL_BASE}#access_token=fake&type=${type}`);
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(900);
+  const text = await page.locator("body").innerText();
+  check(`a ${type} link lands on the set-password screen`, expected.test(text), true);
+  // The decisive one: an invitee must NOT be dropped into the app with no password.
+  check(`a ${type} link does not open the screens instead`,
+        /Golden Breakout|stocks loaded/.test(text), false);
+}
+
 console.log("");
 if (pageErrors.length) {
   console.log("page errors:");
