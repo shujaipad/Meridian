@@ -172,14 +172,13 @@ if (FROM_DB) {
   // TTY, so a carriage-return counter never redraws -- it just never appears, and a
   // step killed mid-read leaves no record of how far it got.
   let mark = 0;
-  const { prices: rows, cutoff, instrumentCount } = await readEquityPrices(db, {
-    windowDays: DB_WINDOW_DAYS,
+  const { cutoff, instrumentCount } = await readEquityPrices(db, {
+    windowDays: DB_WINDOW_DAYS, into: prices,
     onProgress: (n) => {
       if (n - mark >= 200_000) { mark = n; console.log(`    ${n.toLocaleString()} rows`); }
     },
   });
   console.log(`  read prices_daily since ${cutoff} for ${instrumentCount} equities`);
-  prices.push(...rows);
   console.log(`  ${prices.length.toLocaleString()} equity price rows from the database`);
 }
 // Check that every EQUITY in the master is present, not that the row counts match.

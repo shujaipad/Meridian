@@ -82,14 +82,13 @@ if (FROM_DB) {
   const { createClient } = await import("@supabase/supabase-js");
   const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
   let mark = 0;
-  const { prices: rows, cutoff, instrumentCount } = await readEquityPrices(db, {
-    windowDays: DEFAULT_DB_WINDOW_DAYS,
+  const { cutoff, instrumentCount } = await readEquityPrices(db, {
+    windowDays: DEFAULT_DB_WINDOW_DAYS, into: prices,
     onProgress: (n) => {
       if (n - mark >= 200_000) { mark = n; console.error(`    ${n.toLocaleString()} rows`); }
     },
   });
   console.error(`  read prices_daily since ${cutoff} for ${instrumentCount} equities`);
-  prices.push(...rows);
 } else {
   for (const f of readdirSync(BASE).filter((f) => /^meridian-price-history-2090-part\d+of3\.csv$/.test(f)).sort()) {
     for (const r of readCSV(join(BASE, f))) {

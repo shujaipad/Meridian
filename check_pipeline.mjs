@@ -200,6 +200,36 @@ await check("leaves the non-equity classes alone", async () => {
   return prices.some((r) => r.ISIN === "GC=F") ? "a commodity came back with the equities" : null;
 });
 
+// A million rows is the whole point of this reader, and a million rows is where
+// `push(...rows)` throws RangeError -- which is exactly how the 2026-09-16 compute step
+// died, twenty-two minutes in, after successfully reading everything it needed. The
+// spread limit sits between 125k and 150k arguments on this runtime, so the fixture is
+// 200k: comfortably past it, and cheap because this fake just slices a sorted array
+// rather than modelling scan order (the checks above already cover that).
+await check("a million-row read does not overflow the stack", async () => {
+  const BIG = 200_000;
+  const bars = Array.from({ length: BIG }, (_, i) => ({
+    universe_id: 1, trade_date: String(i).padStart(7, "0"),
+    high: 2, low: 1, close: 1.5, volume: 10,
+  }));
+  const tables = { universe: [{ id: 1, identifier: "INE397D01024", asset_class: "equity" }],
+                   prices_daily: bars };
+  const bigDb = { from: (t) => { const q = {
+    select: () => q, order: () => q, eq: () => q, gte: () => q, in: () => q,
+    range: (from, to) => Promise.resolve({ data: tables[t].slice(from, to + 1), error: null }),
+  }; return q; } };
+  const into = [];
+  await readEquityPrices(bigDb, { windowDays: 100_000, into });
+  return eq(into.length, BIG, "rows appended");
+});
+
+await check("into is appended to, not replaced", async () => {
+  const into = [{ ISIN: "SENTINEL", Date: "1900-01-01" }];
+  const { prices } = await readEquityPrices(priceDb(), { windowDays: 100_000, into });
+  if (prices !== into) return "returned a different array than the one passed in";
+  return into[0].ISIN === "SENTINEL" ? null : "clobbered what the caller already had";
+});
+
 await check("the retention window clears the model's read window", () => {
   // Not a style point: 800 CALENDAR days is ~550 trading days and the breadth series
   // alone is 500 of them. Pruning into the read window shortens MA200, the 252-day RS

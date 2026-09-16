@@ -223,8 +223,18 @@ export async function readAllChunked(db, table, columns, { idColumn, ids, orderB
  *
  * Blocked by instrument rather than paged straight through: see readAllChunked. A
  * flat offset walk over the whole table crosses the statement timeout around page 800.
+ *
+ * `into` APPENDS to an array the caller already has, rather than handing back one to
+ * be merged. That is not a convenience. Returning the array made both call sites write
+ * `prices.push(...rows)`, and spreading 1,049,060 elements into a call throws
+ * RangeError: Maximum call stack size exceeded -- which is how the 2026-09-16 compute
+ * step died, twenty-two minutes into a run, after reading every row it needed. The
+ * previous code pushed row by row inside onPage and never spread; the refactor that
+ * removed the duplication introduced the hazard at both copies at once. Appending into
+ * the caller's array leaves nothing to get wrong, and avoids holding two million-row
+ * arrays at the same time.
  */
-export async function readEquityPrices(db, { windowDays, onProgress } = {}) {
+export async function readEquityPrices(db, { windowDays, into, onProgress } = {}) {
   const cutoff = new Date(Date.now() - windowDays * 86400_000).toISOString().slice(0, 10);
   const isinById = {};
   await readAll(db, "universe", "id,identifier", {
@@ -233,7 +243,7 @@ export async function readEquityPrices(db, { windowDays, onProgress } = {}) {
     onPage: (rows) => rows.forEach((r) => { isinById[r.id] = r.identifier; }),
   });
   const ids = Object.keys(isinById).map(Number);
-  const prices = [];
+  const prices = into ?? [];
   await readAllChunked(db, "prices_daily", "universe_id,trade_date,high,low,close,volume", {
     idColumn: "universe_id", ids, orderBy: ["universe_id", "trade_date"],
     filter: (q) => q.gte("trade_date", cutoff),
