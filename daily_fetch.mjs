@@ -46,9 +46,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { deepRepullCap, exchangeDateFormatter, medianNewestStored, restatementOf,
-         tradingArrearsSince, unabsorbedEventDate } from "./meridian-detect.js";
-import { DEFAULT_RETENTION_DAYS, r4, readAll, readCSV, sleep, withRetry } from "./meridian-io.js";
+import { arrearsInstrumentDays, deepRepullCap, exchangeDateFormatter, restatementOf,
+         SETTLEMENT_DAYS, unabsorbedEventDate, unsettledFrom } from "./meridian-detect.js";
+import { DEFAULT_RETENTION_DAYS, readAll, readCSV, rPrice, sleep, withRetry } from "./meridian-io.js";
 
 const BASE = dirname(fileURLToPath(import.meta.url));
 const CHART = "https://query1.finance.yahoo.com/v8/finance/chart/";
@@ -143,9 +143,9 @@ function barsOf(result) {
     const ratio = close ? a / close : 1;
     out.push({
       date: fmt.format(new Date(ts[i] * 1000)),
-      high: q.high?.[i] != null ? r4(q.high[i] * ratio) : null,
-      low: q.low?.[i] != null ? r4(q.low[i] * ratio) : null,
-      close: r4(a),
+      high: q.high?.[i] != null ? rPrice(q.high[i] * ratio) : null,
+      low: q.low?.[i] != null ? rPrice(q.low[i] * ratio) : null,
+      close: rPrice(a),
       volume: q.volume?.[i] ? Math.round(q.volume[i]) : null,
     });
   }
@@ -230,6 +230,16 @@ const storedBy = {};
 for (const r of stored) (storedBy[r.universe_id] ||= {})[r.trade_date] = Number(r.close);
 console.log(`stored overlap window: ${stored.length.toLocaleString()} rows since ${since}`);
 
+// Everything on or after this date is still settling and is rewritten rather than
+// judged; everything before it is evidence. See restatementOf.
+const UNSETTLED_FROM = unsettledFrom();
+// The re-pull cap scales with this, not with any one instrument's lag. Computed here,
+// before the sweep appends anything, so it describes the arrears the sweep is about
+// to work through rather than what is left afterwards.
+const INSTRUMENT_DAYS = arrearsInstrumentDays(storedBy);
+console.log(`settlement window: bars from ${UNSETTLED_FROM} are rewritten, not judged`
+          + ` (${SETTLEMENT_DAYS} days)`);
+
 // An instrument with no stored history escalates to a five-year deep re-pull, which is
 // exactly right for one instrument and catastrophic for all of them. On 2026-09-10
 // prices_daily was truncated to escape a full disk; had this job run that night it
@@ -283,7 +293,7 @@ for (const [i, u] of targets.entries()) {
     const evDate = unabsorbedEventDate(result, newestStored);
     if (evDate) reason = `corporate action ${evDate}, after newest stored ${newestStored}`;
     if (!reason) {
-      const r = restatementOf(bars, have, r4);
+      const r = restatementOf(bars, have, rPrice, { settledBefore: UNSETTLED_FROM });
       if (r) reason = `restated ${r.date}: ${r.was} -> ${r.now}`;
     }
   }
@@ -291,8 +301,14 @@ for (const [i, u] of targets.entries()) {
   if (reason) {
     flagged.push({ ...u, reason });
   } else {
+    // New bars, AND any bar still inside the settlement window -- the counterpart to
+    // the exclusion in restatementOf. A bar written at 14:30 UTC is an intraday
+    // snapshot of a session still open; rewriting it once it settles is one upserted
+    // row, and the alternative is leaving a provisional value in place until it ages
+    // out of the overlap window and then reporting it as a restatement. That is what
+    // flagged every commodity, currency, index and crypto instrument on 2026-09-16.
     const rows = bars
-      .filter((b) => have[b.date] === undefined)
+      .filter((b) => have[b.date] === undefined || b.date >= UNSETTLED_FROM)
       .map((b) => ({ universe_id: u.id, trade_date: b.date,
                      high: b.high, low: b.low, close: b.close, volume: b.volume }));
     if (rows.length) { await upsertPrices(rows, u.symbol); appended += rows.length; }
@@ -331,15 +347,13 @@ for (const f of flagged) console.log(`  flagged ${f.symbol}: ${f.reason}`);
 //
 // Capped, for the same reason as the guard above -- but as a RATE, not a count. The
 // flat 150 quietly assumed the job ran last night; see deepRepullCap.
-const medianNewest = medianNewestStored(storedBy);
-const tradingArrears = tradingArrearsSince(medianNewest);
-const MAX_DEEP_REPULLS = deepRepullCap(tradingArrears);
-console.log(`median newest stored bar ${medianNewest ?? "none"}`
-          + ` — ${tradingArrears} trading day(s) of arrears, re-pull cap ${MAX_DEEP_REPULLS}`);
+const MAX_DEEP_REPULLS = deepRepullCap(INSTRUMENT_DAYS, targets.length);
+console.log(`${INSTRUMENT_DAYS.toLocaleString()} instrument-days of arrears`
+          + ` across ${targets.length} instruments — re-pull cap ${MAX_DEEP_REPULLS}`);
 
 if (flagged.length > MAX_DEEP_REPULLS) {
   console.error(`\n${flagged.length} instruments flagged for a deep re-pull, over the cap of ${MAX_DEEP_REPULLS}.`);
-  console.error(`That cap already allows for ${tradingArrears} trading day(s) of arrears.`);
+  console.error(`That cap already allows for ${INSTRUMENT_DAYS.toLocaleString()} instrument-days of arrears.`);
   console.error("This many means something systemic -- a feed change, a wholesale");
   console.error("re-adjustment, or a partial load -- and re-pulling each of them");
   console.error("would take hours and churn the database.");

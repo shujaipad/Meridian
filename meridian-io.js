@@ -52,6 +52,35 @@ export function readCSV(path) {
 // of zero and a missing reading into the same bucket.
 export const num = (v) => (v === "" || v == null ? null : Number(v));
 export const r4 = (v) => (v == null || Number.isNaN(v) ? null : Math.round(v * 1e4) / 1e4);
+
+/**
+ * Rounding for a PRICE, which r4 is not.
+ *
+ * `r4` is four decimal places, and four decimal places cannot hold SHIB at $0.000005:
+ * Math.round(0.000005 * 1e4) is 0. Migration 004 widened the column to numeric(20,10)
+ * precisely because 1,807 of SHIB's 1,827 stored bars were a literal zero -- and then
+ * the daily fetch went on rounding every bar it wrote to four decimals, which would
+ * have put the zeros straight back. A wider column does not help a value that was
+ * already destroyed in JavaScript.
+ *
+ * Fixed decimals are the wrong idea for a universe spanning $0.000005 to ₹162,005.
+ * At or above 1 this is r4 exactly, so nothing that works today changes. Below 1 it
+ * keeps four significant decimals past the leading zeros, up to the ten the column
+ * holds.
+ *
+ * It also ends a second, quieter problem. A legacy value like 0.70815 sits a hair
+ * below the representable halfway point, so Math.round(0.70815 * 1e4) is 7081 while
+ * Yahoo's own rounding gave 0.7082 -- a one-step disagreement that the restatement
+ * detector read as real, for seven instruments, every night. Keeping five decimals
+ * for a sub-1 value preserves it exactly and the disagreement disappears.
+ */
+export const rPrice = (v) => {
+  if (v == null || Number.isNaN(v)) return null;
+  const mag = Math.abs(v);
+  if (mag >= 1 || mag === 0) return Math.round(v * 1e4) / 1e4;
+  const f = 10 ** Math.min(10, 4 + Math.ceil(-Math.log10(mag)));
+  return Math.round(v * f) / f;
+};
 export const r2 = (v) => (v == null || Number.isNaN(v) ? null : Math.round(v * 100) / 100);
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

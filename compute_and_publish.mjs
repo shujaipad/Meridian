@@ -42,7 +42,7 @@ import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { num, r2, r4, readAll, readAllChunked, readCSV, withRetry } from "./meridian-io.js";
+import { num, r2, r4, readAll, readAllChunked, readCSV, rPrice, withRetry } from "./meridian-io.js";
 
 import {
   bandOfRSRating, closesByKeyFromPrices, computeAll, computeBreadthSeries,
@@ -238,11 +238,15 @@ const scores = computeFundamentalScores(computed);
 // `t` may be null: computeTechnicalBlock returns null for an instrument with too
 // little history, and the sectoral path can hand one over.
 const technicalRow = (t, r) => ({
-  cmp: r4(t?.cmp), change_pct: r4(t?.changePct),
-  high52: r4(t?.high52), low52: r4(t?.low52),
+  // Price-valued fields take rPrice, not r4: four decimal places round SHIB at
+  // $0.000005 to a literal zero, and a screen that prints 0.0000 for a live
+  // instrument is the same defect migration 004 was written to fix. Percentages stay
+  // on r4 -- they are not prices and extra digits on a small one help nobody.
+  cmp: rPrice(t?.cmp), change_pct: r4(t?.changePct),
+  high52: rPrice(t?.high52), low52: rPrice(t?.low52),
   pct_from_high52: r4(t?.pctFromHigh52), pct_from_low52: r4(t?.pctFromLow52),
-  ma3: r4(t?.mas?.[3]), ma8: r4(t?.mas?.[8]), ma30: r4(t?.mas?.[30]),
-  ma50: r4(t?.mas?.[50]), ma100: r4(t?.mas?.[100]), ma200: r4(t?.mas?.[200]),
+  ma3: rPrice(t?.mas?.[3]), ma8: rPrice(t?.mas?.[8]), ma30: rPrice(t?.mas?.[30]),
+  ma50: rPrice(t?.mas?.[50]), ma100: rPrice(t?.mas?.[100]), ma200: rPrice(t?.mas?.[200]),
   rsi: r2(t?.rsi),
   s_signals: t?.sSignals ?? null, m_signals: t?.mSignals ?? null,
   s_streaks: t?.sStreaks ?? null, m_streaks: t?.mStreaks ?? null,

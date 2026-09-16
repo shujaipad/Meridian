@@ -77,11 +77,39 @@ export function unabsorbedEventDate(result, newestStored) {
 export const RESTATEMENT_ABS_TOL = 5e-5;   // half a step at four decimals
 export const RESTATEMENT_REL_TOL = 1e-4;   // 0.01%, ~30x below the median restatement
 
-export function restatementOf(bars, have, r4) {
+/**
+ * THE NEWEST BARS ARE NOT EVIDENCE. The job runs at 14:30 UTC, which is 10:30 in New
+ * York: every commodity, index, FX pair and crypto bar it writes is an intraday
+ * snapshot of a session still in progress. Yahoo settles them hours later, and the
+ * next night's comparison finds a value that moved -- correctly, expectedly, and by
+ * about a percent.
+ *
+ * That is not hypothetical. Of the 91 restatements the 2026-09-16 run reported, 86
+ * fell on exactly two dates: 2026-09-09, the last bar in the committed non-equity
+ * CSVs, and 2026-09-15, the last bar the previous run appended. Both were written
+ * mid-session. Between them they accounted for every commodity, every currency,
+ * every index and every crypto instrument in the universe -- flagged for a five-year
+ * re-pull, every night, forever, for the crime of having been fetched before the
+ * close.
+ *
+ * So bars newer than the settlement window are excluded here, and the caller
+ * re-writes them instead: an upsert of the settled value costs one row and fixes the
+ * thing a re-pull was being asked to fix. Excluding them delays a genuine
+ * restatement on a recent date by a day or two; it never loses one, because the bar
+ * ages out of the window and is compared like any other.
+ */
+export const SETTLEMENT_DAYS = 4;          // covers a Friday bar compared on Monday
+
+export function unsettledFrom(now = Date.now()) {
+  return new Date(now - SETTLEMENT_DAYS * 86400_000).toISOString().slice(0, 10);
+}
+
+export function restatementOf(bars, have, round, { settledBefore } = {}) {
   for (const b of bars) {
+    if (settledBefore && b.date >= settledBefore) continue;   // still moving, by design
     const prev = have[b.date];
     if (prev == null) continue;                 // a new bar, not an overlap
-    const was = r4(Number(prev));
+    const was = round(Number(prev));
     if (was == null || b.close == null) continue;
     const diff = Math.abs(b.close - was);
     if (diff > Math.max(RESTATEMENT_ABS_TOL, RESTATEMENT_REL_TOL * Math.abs(was))) {
@@ -97,21 +125,55 @@ export function restatementOf(bars, have, r4) {
  * The cap guards a SYSTEMIC signal -- a feed change, a wholesale re-adjustment, a
  * partial load -- and "systemic" is a rate. A flat count silently assumes the job ran
  * last night: one night of arrears and a handful of ordinary corporate actions are
- * the same number, but eleven nights of arrears carry eleven nights of them. The flat
+ * the same number, but eleven nights of arrears carry eleven nights of them. A flat
  * 150 would have refused that catch-up, which is to say the guard would have become
  * the reason the pipeline stayed broken while looking like the reason it was safe.
  *
- * 40 per trading day is generous against what this universe measurably produces: 335
- * ex-dividend dates across a month, so ~15 a day. The floor keeps a normal night's
- * headroom; the ceiling still refuses the 1,009 of 2026-09-15 without hesitating.
+ * Two terms, and the binding one says what "systemic" means:
+ *
+ *   RATE  0.07 per instrument-day of arrears. Measured on 2026-09-16, the real rate
+ *         was 0.024 -- 254 flags from ~10,600 instrument-days -- so this carries a
+ *         factor of three. A fully caught-up universe of ~2,200 lands on the floor,
+ *         which is where a flat 150 was right all along.
+ *   SHARE 20% of the universe in one night, whatever the arrears. A feed change or a
+ *         partial load moves everything, not a fifth of everything; 1,009 of 2,238 is
+ *         45% and stays refused. This is the term that actually bites.
+ *
+ * The truncation case -- an empty prices_daily -- reduces arrears to zero, so the cap
+ * falls to the floor and 2,240 flags are refused. The 50%-of-universe guard above the
+ * sweep catches it first in any case.
  */
-export const REPULL_PER_TRADING_DAY = 40;
+export const REPULL_RATE = 0.07;           // per instrument-day of arrears
 export const REPULL_FLOOR = 150;
-export const REPULL_CEILING = 400;
+export const REPULL_CEILING_SHARE = 0.20;  // of the universe, in one night
 
-export function deepRepullCap(tradingArrears) {
-  const days = Math.max(1, Math.ceil(tradingArrears || 1));
-  return Math.min(REPULL_CEILING, Math.max(REPULL_FLOOR, REPULL_PER_TRADING_DAY * days));
+export function deepRepullCap(instrumentDaysOfArrears, universeSize) {
+  const ceiling = Math.max(REPULL_FLOOR, Math.round(universeSize * REPULL_CEILING_SHARE));
+  const allowed = Math.max(REPULL_FLOOR, Math.round(REPULL_RATE * (instrumentDaysOfArrears || 0)));
+  return Math.min(ceiling, allowed);
+}
+
+/**
+ * Total instrument-days of arrears: for every instrument that holds history, how many
+ * trading days behind it is, summed.
+ *
+ * The median was the obvious measure and it was wrong. A partially-completed run
+ * leaves a bimodal universe -- half of it caught up to yesterday, half still eleven
+ * days behind -- and the median lands on whichever half is larger while the flags all
+ * come from the other one. On 2026-09-16 the median said four days of arrears and 149
+ * of the 163 corporate actions came from instruments nine days behind.
+ *
+ * Summing is also the honest model: each instrument-day carries its own independent
+ * chance of a dividend, a split or a restatement, so the number of flags to expect
+ * scales with the total, not with any one instrument's lag.
+ */
+export function arrearsInstrumentDays(storedBy, now = Date.now()) {
+  let total = 0;
+  for (const byDate of Object.values(storedBy)) {
+    const newest = Object.keys(byDate).reduce((a, b) => (b > a ? b : a), "");
+    if (newest) total += tradingArrearsSince(newest, now);
+  }
+  return total;
 }
 
 /** Calendar days between a YYYY-MM-DD and now, converted to trading days at 5/7. */

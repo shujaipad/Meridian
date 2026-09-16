@@ -2502,6 +2502,41 @@ covering 1,100 days is `5y` and the ~700 surplus bars were being written only fo
 night's prune to delete them — dead tuples being exactly what filled this database on
 2026-09-10 (§11b).
 
+**Two more, found by the verification run rather than by reading.** Fixing the three
+above took the flag count from 1,009 to 255 and the "no recent stored history" count
+from 637 to 1 — and made two smaller defects visible that the noise had been hiding.
+
+**The newest bars had never settled.** The job runs at 14:30 UTC, which is 10:30 in New
+York, so every commodity, index, FX and crypto bar it writes is an intraday snapshot of
+a session still open. Yahoo settles them hours later. 86 of the 91 restatements the
+verification run reported fell on exactly two dates — 2026-09-09, the last bar in the
+committed non-equity CSVs, and 2026-09-15, the last bar the previous run appended — and
+between them they accounted for **every commodity, currency, index and crypto
+instrument in the universe**, at a mean of ~1%. Every night, forever, for the crime of
+having been fetched before the close. Bars inside a four-day settlement window are now
+rewritten rather than judged: an upsert of the settled value costs one row and fixes
+what a five-year re-pull was being asked to fix. The append path used to skip any date
+it already held, so a provisional value was never corrected at all.
+
+**`r4` cannot hold a price.** `Math.round(0.000005 * 1e4)` is 0, so the daily fetch
+would have written SHIB to the database as a literal zero — the exact defect migration
+004 was written to fix, reintroduced from the other side, since widening the column
+does nothing for a value already destroyed in JavaScript. `rPrice` is `r4` exactly at
+or above 1 and keeps four significant decimals below it. It also ends a quieter
+problem: `0.70815` sits a hair under the representable halfway point, so `r4` gave
+`0.7081` where Yahoo gave `0.7082`, and seven instruments were flagged nightly on a
+one-step disagreement.
+
+**And the cap needed a better denominator.** Scaling it by the *median* instrument's
+arrears failed on the first bimodal universe it met: a partially-completed run had left
+half the instruments caught up to yesterday and half eleven days behind, the median
+said four days, and 149 of the 163 corporate actions came from instruments nine days
+behind. It is now the summed instrument-days of arrears — which is also the honest
+model, since each instrument-day carries its own independent chance of an event — with
+the binding term a flat share of the universe: 20% in one night. A feed change or a
+partial load moves everything, not a fifth of everything, so 1,009 of 2,238 stays
+refused.
+
 **`check_pipeline.mjs`** covers all of it without a network or a database, and runs as
 the *first* step of the nightly job: both defects it guards wasted the whole night
 before saying anything. Its paging checks run against a fake database that reproduces

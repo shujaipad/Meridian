@@ -12,9 +12,10 @@
  *
  * The rule each one taught: a check that only counts rows cannot see either.
  */
-import { deepRepullCap, medianNewestStored, restatementOf, tradingArrearsSince,
-         unabsorbedEventDate } from "./meridian-detect.js";
-import { PAGE, r4, readAll, readAllChunked } from "./meridian-io.js";
+import { arrearsInstrumentDays, deepRepullCap, medianNewestStored, restatementOf,
+         SETTLEMENT_DAYS, tradingArrearsSince, unabsorbedEventDate,
+         unsettledFrom } from "./meridian-detect.js";
+import { PAGE, r4, readAll, readAllChunked, rPrice } from "./meridian-io.js";
 
 let failed = 0;
 // Awaited, always. An earlier draft called fn() and tested its return value, which
@@ -187,70 +188,146 @@ const bars = (o) => Object.entries(o).map(([date, close]) => ({ date, close }));
 
 // The five instruments this actually fired on in production, every night, for good.
 // Stored at full precision by the original load, refetched through r4, identical.
-await check("four-decimal rounding of a legacy value is not a restatement", () => {
+// `settledBefore` is the date at which bars STOP being settled, so a far-future value
+// treats every test date as settled and exercises the comparison itself rather than
+// the exclusion. Written the other way round first, and every check below passed
+// while comparing nothing at all -- the settlement section is what caught it.
+const SETTLED = "2099-01-01";
+const at = (date, now, was) => restatementOf(bars({ [date]: now }), { [date]: was }, rPrice,
+                                             { settledBefore: SETTLED });
+
+await check("rounding a legacy value is not a restatement", () => {
+  // Every pair the production runs actually fired on. The last two are the one-step
+  // half-way cases that r4 got wrong and rPrice preserves.
   const cases = [[0.330915, 0.3309], [9.463849, 9.4638], [0.991973, 0.992],
-                 [0.998978, 0.999], [8.952429, 8.9524], [0.06955, 0.0696]];
-  const bad = cases.filter(([was, now]) =>
-    restatementOf(bars({ "2026-09-09": now }), { "2026-09-09": was }, r4));
+                 [0.998978, 0.999], [8.952429, 8.9524], [0.06955, 0.0696],
+                 [0.70815, 0.7082], [0.585754, 0.58575]];
+  const bad = cases.filter(([was, now]) => at("2026-09-09", now, was));
   return eq(bad.length, 0, `false restatements among ${cases.length} rounding-only pairs`);
 });
 
+await check("a sub-cent price survives rounding at all", () => {
+  if (rPrice(0.000005) !== 0.000005) return `rPrice(0.000005) = ${rPrice(0.000005)}, want 0.000005`;
+  if (r4(0.000005) !== 0) return "r4 no longer rounds SHIB to zero -- rewrite this check";
+  // ...and is not then reported as a restatement against itself.
+  return at("2026-09-09", 0.000005, 0.000005) ? "flagged itself" : null;
+});
+
+await check("rPrice is r4 exactly at or above 1", () => {
+  const vals = [1, 94.029999, 1840.0, 162005.25, 23540.050781, 4417.799805];
+  const bad = vals.filter((v) => rPrice(v) !== r4(v));
+  return eq(bad.length, 0, "values where rPrice and r4 disagree");
+});
+
 await check("a numeric column arriving as a string still compares", () =>
-  eq(restatementOf(bars({ "2026-09-09": 0.3309 }), { "2026-09-09": "0.3309000000" }, r4),
-     null, "verdict"));
+  eq(at("2026-09-09", 0.3309, "0.3309000000"), null, "verdict"));
 
 await check("a real restatement is caught", () => {
-  const r = restatementOf(bars({ "2026-09-09": 96.05 }), { "2026-09-09": 94.029999 }, r4);
+  const r = at("2026-09-09", 96.05, 94.029999);
   return r ? eq(r.date, "2026-09-09", "date") : "missed a 2.1% restatement";
 });
 
 await check("a restatement just above the floor is caught", () => {
   // 0.02% on a ₹1,840 stock: well below the 0.29% median, well above the noise.
-  const r = restatementOf(bars({ "2026-09-09": 1840.4 }), { "2026-09-09": 1840.0 }, r4);
-  return r ? null : "missed a 0.02% restatement";
+  return at("2026-09-09", 1840.4, 1840.0) ? null : "missed a 0.02% restatement";
 });
 
 await check("a dates-we-do-not-hold bar is not an overlap", () =>
-  eq(restatementOf(bars({ "2026-09-15": 999 }), { "2026-09-04": 1840 }, r4), null, "verdict"));
+  eq(restatementOf(bars({ "2026-09-15": 999 }), { "2026-09-04": 1840 }, rPrice,
+                   { settledBefore: SETTLED }), null, "verdict"));
 
-await check("the first disagreeing date is the one reported", () => {
+await check("the first settled disagreeing date is the one reported", () => {
   const r = restatementOf(bars({ "2026-09-03": 10, "2026-09-04": 20 }),
-                          { "2026-09-03": 11, "2026-09-04": 21 }, r4);
+                          { "2026-09-03": 11, "2026-09-04": 21 }, rPrice,
+                          { settledBefore: SETTLED });
   return r ? eq(r.date, "2026-09-03", "date") : "found nothing";
+});
+
+// ---------------------------------------------------------------- settlement
+console.log("\nsettlement window");
+
+await check("an unsettled bar that moved is not a restatement", () => {
+  const cutoff = unsettledFrom(Date.parse("2026-09-16T14:30:00Z"));
+  const r = restatementOf(bars({ "2026-09-15": 101.21 }), { "2026-09-15": 99.089996 },
+                          rPrice, { settledBefore: cutoff });
+  return r ? `flagged ${r.date}, which was still settling` : null;
+});
+
+await check("the same move on a settled date is", () => {
+  const cutoff = unsettledFrom(Date.parse("2026-09-16T14:30:00Z"));
+  const r = restatementOf(bars({ "2026-09-09": 101.21 }), { "2026-09-09": 99.089996 },
+                          rPrice, { settledBefore: cutoff });
+  return r ? null : "missed a 2.1% restatement on a settled bar";
+});
+
+await check("a Friday bar is still unsettled when compared on Monday", () => {
+  // 2026-09-11 is a Friday, 2026-09-14 the Monday after.
+  const cutoff = unsettledFrom(Date.parse("2026-09-14T14:30:00Z"));
+  return "2026-09-11" >= cutoff ? null
+    : `cutoff ${cutoff} treats Friday as settled; SETTLEMENT_DAYS is ${SETTLEMENT_DAYS}`;
+});
+
+// The shape of the 2026-09-16 failure: every non-equity's newest bar, written
+// mid-session, reported as a restatement the following night.
+await check("a universe of mid-session bars produces no restatements", () => {
+  const cutoff = unsettledFrom(Date.parse("2026-09-16T14:30:00Z"));
+  const flagged = Array.from({ length: 98 }, (_, i) => {
+    const provisional = 100 + i, settled = provisional * 1.011;   // the measured ~1.1%
+    return restatementOf(bars({ "2026-09-15": settled }), { "2026-09-15": provisional },
+                         rPrice, { settledBefore: cutoff });
+  }).filter(Boolean).length;
+  return eq(flagged, 0, "non-equities flagged for having been fetched before the close");
 });
 
 // ---------------------------------------------------------------- the cap
 console.log("\ndeep re-pull cap");
 
-await check("a normal night keeps the original headroom", () =>
-  eq(deepRepullCap(1), 150, "cap one trading day behind"));
+const UNIVERSE = 2238;
 
-await check("arrears buy proportional headroom", () =>
-  eq(deepRepullCap(8), 320, "cap eight trading days behind"));
-
-// The night that produced this work: stored history ended 2026-09-04, the job ran at
-// 14:40 UTC on the 15th, and 1,009 instruments were flagged. The cap must be generous
-// enough to let a real catch-up through and still refuse that.
-await check("the 2026-09-15 arrears buy catch-up headroom", () =>
-  eq(deepRepullCap(tradingArrearsSince("2026-09-04", Date.parse("2026-09-15T14:40:00Z"))),
-     360, "cap on the night this was found"));
-
-await check("the ceiling still refuses 2026-09-15's 1,009", () => {
-  const cap = deepRepullCap(tradingArrearsSince("2026-09-04", Date.parse("2026-09-15T14:40:00Z")));
-  return cap < 1009 ? null : `cap ${cap} would have accepted a systemic signal`;
+await check("a caught-up universe lands on the floor", () => {
+  const cap = deepRepullCap(UNIVERSE * 1, UNIVERSE);
+  // The rate is set so a universe one day behind lands on the floor, give or take the
+  // rounding: that is the regime a flat 150 described correctly all along.
+  return cap >= 150 && cap <= 160 ? null : `cap ${cap}, want ~150`;
 });
 
-await check("a month of arrears cannot raise the cap past the ceiling", () =>
-  eq(deepRepullCap(tradingArrearsSince("2026-08-04", Date.parse("2026-09-15T14:40:00Z"))),
-     400, "cap six weeks behind"));
+await check("arrears buy headroom", () =>
+  eq(deepRepullCap(UNIVERSE * 2, UNIVERSE), 313, "cap two trading days behind"));
 
-// 5/7 rounds up rather than counting a calendar: the real answer between those two
-// dates is 7 trading days, and erring high buys catch-up room rather than denying it.
+await check("the share ceiling binds before the arrears do", () =>
+  eq(deepRepullCap(UNIVERSE * 30, UNIVERSE), 448, "cap thirty trading days behind"));
+
+await check("the ceiling still refuses 2026-09-15's 1,009", () => {
+  const cap = deepRepullCap(UNIVERSE * 30, UNIVERSE);
+  return cap < 1009 ? null : `cap ${cap} would have accepted 45% of the universe`;
+});
+
+// The night this was found: ~1,057 instruments nine trading days behind and ~1,133
+// one day behind, against 248 flags once the detectors were corrected.
+await check("the 2026-09-16 arrears admit its 248 real flags", () => {
+  const cap = deepRepullCap(1057 * 9 + 1133 * 1, UNIVERSE);
+  return cap >= 248 ? null : `cap ${cap} would have refused a legitimate catch-up`;
+});
+
+await check("an emptied prices_daily falls to the floor, not the ceiling", () =>
+  eq(deepRepullCap(0, UNIVERSE), 150, "cap with no stored history anywhere"));
+
+await check("arrears are summed across instruments, not averaged", () => {
+  const storedBy = {
+    1: { "2026-09-04": 1 },          // 9 trading days behind
+    2: { "2026-09-04": 1 },
+    3: { "2026-09-15": 1 },          // 1 day behind
+  };
+  // 2026-09-04 is 10 trading days back from 2026-09-16 14:30 and 2026-09-15 is 2.
+  const days = arrearsInstrumentDays(storedBy, Date.parse("2026-09-16T14:30:00Z"));
+  return eq(days, 10 + 10 + 2, "instrument-days");
+});
+
+await check("an instrument with no bars contributes nothing", () =>
+  eq(arrearsInstrumentDays({ 1: {} }, Date.parse("2026-09-16T14:30:00Z")), 0, "instrument-days"));
+
 await check("calendar days convert to trading days conservatively", () =>
   eq(tradingArrearsSince("2026-09-04", Date.parse("2026-09-15T14:40:00Z")), 9, "trading arrears"));
-
-await check("no stored history at all does not inflate the cap", () =>
-  eq(deepRepullCap(tradingArrearsSince(null)), 150, "cap"));
 
 await check("the median newest stored bar ignores a few dead scrips", () => {
   const storedBy = {
