@@ -16,7 +16,7 @@
  * (supabase-migration-005-capacity.sql). Without it you still get the thing that
  * actually predicts trouble: how many rows there are and how fast they arrive.
  */
-import { readAll } from "./meridian-io.js";
+import { collectHealth, evaluateHealth, mbPerYear, usedMbOf } from "./meridian-health.js";
 
 const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env;
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
@@ -34,19 +34,18 @@ const TABLES = ["universe", "prices_daily", "fundamentals_annual", "technicals_d
                 "sectoral_technicals_daily", "fundamentals_scored",
                 "golden_breakout_candidates", "market_breadth_daily", "fetch_job_log"];
 
-async function rowCount(table) {
-  const { count, error } = await db.from(table).select("*", { count: "exact", head: true });
-  if (error) return { error: error.message };
-  return { count };
-}
-
 console.log("\n--- meridian database report ---------------------------------");
 console.log(new Date().toISOString());
+
+// One pass, shared with the watchdog. The report and the alert asked the same four
+// questions of the same database in two implementations until 2026-09-16; §11a is
+// about what happens next when they are allowed to stay that way.
+const facts = await collectHealth(db, { tables: TABLES });
 
 let prices = null;
 console.log("\n  rows");
 for (const t of TABLES) {
-  const r = await rowCount(t);
+  const r = facts.rowCounts[t] ?? {};
   if (r.error) { console.log(`    ${t.padEnd(28)} unreadable: ${r.error}`); continue; }
   // PostgREST can answer a head-count with a null count. Reading that as a number
   // throws, and a report that crashes on the way to warning you about a limit is
@@ -59,23 +58,11 @@ for (const t of TABLES) {
 // Per-class as-of dates: the fastest way to see a screen has gone stale, and the
 // check that would have shown five crypto instruments frozen years in the past.
 console.log("\n  freshness");
-try {
-  const universe = await readAll(db, "universe", "id,asset_class,symbol", { orderBy: ["id"] });
-  const tech = await readAll(db, "technicals_daily", "universe_id,as_of_date",
-                             { orderBy: ["universe_id"] });
-  const classOf = Object.fromEntries(universe.map((u) => [String(u.id), u.asset_class]));
-  const byClass = {};
-  for (const t of tech) {
-    const c = classOf[String(t.universe_id)] ?? "unknown";
-    (byClass[c] ||= []).push(t.as_of_date);
-  }
-  for (const [c, dates] of Object.entries(byClass).sort()) {
-    const max = dates.reduce((m, d) => (d > m ? d : m), "");
-    const age = Math.round((Date.now() - Date.parse(max)) / 86400_000);
-    console.log(`    ${c.padEnd(12)} as of ${max}  (${age} day${age === 1 ? "" : "s"} old)`);
-  }
-} catch (e) {
-  console.log(`    unavailable: ${e.message}`);
+const classes = Object.entries(facts.freshness).sort();
+if (!classes.length) console.log("    unavailable");
+for (const [c, max] of classes) {
+  const age = Math.round((Date.now() - Date.parse(max)) / 86400_000);
+  console.log(`    ${c.padEnd(12)} as of ${max}  (${age} day${age === 1 ? "" : "s"} old)`);
 }
 
 // The job log, at last read by something. §6.5 says fetch_job_log backs "failure
@@ -83,54 +70,52 @@ try {
 // daily job was built and queried by nothing at all -- the evidence recorded, nobody
 // told. Half a silent-failure gap is still a silent-failure gap.
 console.log("\n  recent jobs");
-try {
-  const { data: jobs, error } = await db.from("fetch_job_log")
-    .select("job_type,status,message,finished_at")
-    .order("finished_at", { ascending: false }).limit(5);
-  if (error) throw new Error(error.message);
-  if (!jobs?.length) {
-    console.log("    no runs recorded yet");
-  } else {
-    for (const j of jobs) {
-      const when = (j.finished_at ?? "").slice(0, 16).replace("T", " ");
-      const mark = j.status === "success" ? "ok  " : "FAIL";
-      console.log(`    ${mark} ${when}  ${j.job_type}  ${(j.message ?? "").slice(0, 70)}`);
-    }
-    // A log that shows a failure and returns zero is the thing this replaces.
-    const lastFailed = jobs[0].status !== "success";
-    if (lastFailed) console.log("    ^ the most recent run did not succeed");
+if (!facts.jobs.length) {
+  console.log("    no runs recorded yet");
+} else {
+  for (const j of facts.jobs) {
+    const when = (j.finished_at ?? "").slice(0, 16).replace("T", " ");
+    const mark = j.status === "success" ? "ok  " : "FAIL";
+    console.log(`    ${mark} ${when}  ${j.job_type}  ${(j.message ?? "").slice(0, 70)}`);
   }
-} catch (e) {
-  console.log(`    unavailable: ${e.message}`);
+  // A log that shows a failure and returns zero is the thing this replaces.
+  if (facts.jobs[0].status !== "success") console.log("    ^ the most recent run did not succeed");
 }
 
 // Byte sizes, if the helper function is installed. Optional on purpose: the report
 // must still work on a database where nobody has run the migration yet.
-let usedMb = null;
 console.log("\n  size");
-const { data: sizes, error: sizeErr } = await db.rpc("meridian_capacity");
-if (sizeErr) {
-  console.log(`    byte sizes unavailable (${sizeErr.message.slice(0, 60)})`);
+const usedMb = usedMbOf(facts.sizes);
+if (!facts.sizes) {
+  console.log("    byte sizes unavailable");
   console.log("    install supabase-migration-005-capacity.sql to enable them");
-} else if (Array.isArray(sizes)) {
-  for (const row of sizes) {
+} else {
+  for (const row of facts.sizes) {
     console.log(`    ${String(row.object).padEnd(44)} ${String(row.size_mb).padStart(8)} MB`);
-    if (row.object === "DATABASE TOTAL") usedMb = Number(row.size_mb);
   }
 }
 
 // Indexes that duplicate each other. prices_daily carried two btrees over the same
 // two columns for the life of the project -- 75.9MB of a 500MB tier, found twice by a
 // person reading a size listing, which is the wrong way to find it.
-const { data: dupes, error: dupErr } = await db.rpc("meridian_redundant_indexes");
-if (!dupErr && Array.isArray(dupes) && dupes.length) {
+if (facts.dupes.length) {
   console.log("\n  redundant indexes");
-  for (const d of dupes) {
+  for (const d of facts.dupes) {
     console.log(`    ${d.table_name}: ${(d.indexes || []).join(" + ")}`);
     console.log(`      ${d.total_mb} MB total, ${d.reclaimable_mb} MB reclaimable by dropping all but one`);
   }
   console.log("    (which to keep is yours to pick -- one usually backs a constraint)");
 }
+
+// The same verdict the watchdog reaches, from the same facts and the same function.
+// Printed here rather than re-derived: if these two ever disagree about whether
+// Meridian is healthy, one of them is lying, and sharing evaluateHealth is what makes
+// that impossible rather than merely unlikely.
+const findings = evaluateHealth(facts, { limitMb: LIMIT_MB, warnPct: WARN_AT,
+                                         staleDays: Number(process.env.ALERT_STALE_DAYS ?? 4) });
+console.log("\n  health");
+if (!findings.length) console.log("    nothing to report");
+for (const f of findings) console.log(`    [${f.level}] ${f.code}: ${f.message.split("\n")[0]}`);
 
 // ---- the part that makes this a check rather than a printout -----------------
 //
@@ -140,19 +125,12 @@ if (!dupErr && Array.isArray(dupes) && dupes.length) {
 // a gauge but a DATE: at ~2,240 bars a night and ~106 bytes a row, 368MB reaches the
 // ceiling in about fourteen months. That is a sentence someone can act on in January
 // rather than discover in September.
-const ROWS_PER_NIGHT = 2240;
-
-// Bytes per row is MEASURED, not assumed, because assuming it gets the one case that
-// matters wrong. A trimmed table with one index costs ~106 bytes a row; the table as
-// it stood on day one, carrying a redundant index and a primary key on a column
-// nothing read, cost ~161. Using the tidy figure would have projected nineteen months
-// of headroom where the truth was thirteen -- reassurance instead of a warning, which
-// is worse than no number at all.
-function mbPerYear(usedMb, rows) {
-  if (!rows) return null;
-  const bytesPerRow = (usedMb * 1048576) / rows;
-  return (ROWS_PER_NIGHT * 365 * bytesPerRow) / 1048576;
-}
+// Bytes per row is MEASURED, not assumed (see mbPerYear in meridian-health.js),
+// because assuming it gets the one case that matters wrong. A trimmed table with one
+// index costs ~106 bytes a row; the table as it stood on day one, carrying a redundant
+// index and a primary key on a column nothing read, cost ~161. Using the tidy figure
+// would have projected nineteen months of headroom where the truth was thirteen --
+// reassurance instead of a warning, which is worse than no number at all.
 
 function projection(currentMb, perYear, rows) {
   const headroom = LIMIT_MB - currentMb;

@@ -135,3 +135,22 @@ jobs:
       - name: Capacity check
         if: ${{ !inputs.dry_run }}
         run: node db_report.mjs
+
+      # if: failure() -- so this fires for ANY failing step above, including the
+      # capacity check, and does not run on a green night. It is the fast channel:
+      # it names the step and links the log within seconds of the failure. The slow
+      # channel is watchdog.yml, which catches the runs that never happen at all and
+      # therefore never reach this line.
+      #
+      # continue-on-error so a broken alerter cannot rewrite the run's conclusion --
+      # the pipeline failure is the finding, and an undeliverable alert must not
+      # disguise which step caused it. notify.mjs still exits non-zero and still
+      # prints the whole alert to the log, so the message survives even when the mail
+      # does not.
+      - name: Say so if anything failed
+        if: failure()
+        continue-on-error: true
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+        run: node notify.mjs --failure

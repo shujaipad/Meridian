@@ -1,0 +1,53 @@
+name: watchdog
+
+# The check that cannot be dodged by the thing it is checking.
+#
+# The nightly job's own `if: failure()` hook is fast and it names the failing step,
+# but it can only fire when the job RUNS and fails. It is silent when the workflow is
+# disabled, when GitHub skips a cron under load, when a dormant repository has its
+# schedules suspended after sixty days, and when a run succeeds while publishing
+# nothing. Every one of those has precedent or near-precedent here: daily.yml spent a
+# day disabled because the button to re-enable it does not render on a phone, and the
+# nightly job failed four nights running in September with nobody told.
+#
+# So this asks the only question that survives all of them -- how old is the data on
+# the screen -- from a workflow the nightly job cannot affect. Two independent crons
+# both failing on the same night is a far smaller risk than one.
+#
+# 03:30 UTC = 09:00 IST, which is after the 20:00 IST nightly run and before the
+# 09:15 IST market open: the answer arrives while it is still useful.
+on:
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print the alert instead of sending it"
+        type: boolean
+        default: false
+
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install --no-save @supabase/supabase-js
+
+      # Exits non-zero when the data is stale, whether or not the mail got out. A red
+      # run in the Actions tab is the fallback channel for exactly the case where the
+      # mail channel is the broken thing.
+      - name: Is the published data current?
+        run: node notify.mjs --watchdog ${{ inputs.dry_run && '--dry-run' || '' }}

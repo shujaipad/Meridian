@@ -12,6 +12,7 @@
  *
  * The rule each one taught: a check that only counts rows cannot see either.
  */
+import { evaluateHealth, mbPerYear, usedMbOf, worstLevel } from "./meridian-health.js";
 import { arrearsInstrumentDays, deepRepullCap, medianNewestStored, restatementOf,
          SETTLEMENT_DAYS, tradingArrearsSince, unabsorbedEventDate,
          unsettledFrom } from "./meridian-detect.js";
@@ -441,6 +442,98 @@ await check("the median newest stored bar ignores a few dead scrips", () => {
     5: { "2020-06-01": 1 },
   };
   return eq(medianNewestStored(storedBy), "2026-09-04", "median newest");
+});
+
+// ---------------------------------------------------------------- health
+console.log("\nhealth checks");
+
+const NOW = Date.parse("2026-09-16T03:30:00Z");
+const healthy = {
+  rowCounts: { prices_daily: { count: 1_468_652 } },
+  freshness: { equity: "2026-09-16", commodity: "2026-09-16", crypto: "2026-09-16",
+               currency: "2026-09-16", index: "2026-09-16" },
+  jobs: [{ job_type: "daily", status: "success", message: "ok", finished_at: "2026-09-16T15:20:00Z" }],
+  sizes: [{ object: "DATABASE TOTAL", size_mb: 204.2 }],
+  dupes: [], errors: [],
+};
+const evalWith = (over) => evaluateHealth({ ...healthy, ...over }, { now: NOW });
+
+await check("a healthy pipeline reports nothing", () =>
+  eq(evalWith({}), [], "findings"));
+
+await check("stale screens are an error", () => {
+  const f = evalWith({ freshness: { equity: "2026-09-04" } });
+  const stale = f.find((x) => x.code === "stale");
+  if (!stale) return "12-day-old screens produced no finding";
+  return stale.level === "error" ? null : `level ${stale.level}, want error`;
+});
+
+// A weekend plus a public holiday is normal and must not mail anyone.
+await check("a long weekend is not stale", () =>
+  eq(evalWith({ freshness: { equity: "2026-09-12" } }).filter((x) => x.code === "stale"),
+     [], "findings four days out"));
+
+await check("the fifth day is", () => {
+  const f = evalWith({ freshness: { equity: "2026-09-11" } });
+  return f.some((x) => x.code === "stale") ? null : "five days old passed silently";
+});
+
+await check("an empty technicals_daily is an error, not silence", () => {
+  const f = evalWith({ freshness: {} });
+  const none = f.find((x) => x.code === "no-screens");
+  return none && none.level === "error" ? null : "publishing nothing at all went unreported";
+});
+
+// The five crypto instruments frozen years in the past: invisible in one as-of date.
+await check("one asset class lagging the rest is caught", () => {
+  const f = evalWith({ freshness: { equity: "2026-09-16", crypto: "2026-09-01" } });
+  return f.some((x) => x.code === "class-skew") ? null : "a 15-day skew went unreported";
+});
+
+await check("a failed job log entry is an error", () => {
+  const f = evalWith({ jobs: [{ job_type: "daily", status: "failure", message: "3 failed" }] });
+  const j = f.find((x) => x.code === "job-failed");
+  return j && j.level === "error" ? null : "a failed run was not reported";
+});
+
+await check("capacity past the threshold is an error", () => {
+  const f = evalWith({ sizes: [{ object: "DATABASE TOTAL", size_mb: 420 }] });
+  const c = f.find((x) => x.code === "capacity");
+  return c && c.level === "error" ? null : "84% of the limit went unreported";
+});
+
+await check("a two-year trajectory warns but does not wake anyone", () => {
+  // 204MB over 1.47M rows is ~146 bytes/row; ~112MB/year against 296MB of headroom is
+  // about 2.6 years, so this one has to be pushed to trip.
+  const f = evaluateHealth({ ...healthy, sizes: [{ object: "DATABASE TOTAL", size_mb: 380 }] },
+                           { now: NOW });
+  const t = f.find((x) => x.code === "trajectory");
+  if (!t) return "a full-in-months trajectory produced no finding";
+  return t.level === "warning" ? null : `level ${t.level}, want warning`;
+});
+
+await check("a check that could not run is reported, not assumed passed", () => {
+  const f = evalWith({ errors: ["capacity rpc: permission denied"] });
+  return f.some((x) => x.code === "unreadable") ? null : "an unreadable check passed silently";
+});
+
+await check("only errors are worth waking someone for", () => {
+  if (worstLevel([]) !== "ok") return "empty findings are not ok";
+  if (worstLevel([{ level: "warning" }]) !== "warning") return "a warning read as something else";
+  if (worstLevel([{ level: "warning" }, { level: "error" }]) !== "error") return "an error was masked by a warning";
+  return null;
+});
+
+await check("bytes per row is measured from the live numbers", () => {
+  // 204.2MB over 1,468,652 rows is ~146 bytes; 2,240 rows a night is ~112MB a year.
+  const perYear = mbPerYear(204.2, 1_468_652);
+  return perYear > 105 && perYear < 120 ? null : `${perYear?.toFixed(0)} MB/year, want ~112`;
+});
+
+await check("a missing capacity row reads as unknown, not as zero", () => {
+  if (usedMbOf(null) !== null) return "null sizes did not read as unknown";
+  if (usedMbOf([{ object: "prices_daily", size_mb: 181 }]) !== null) return "a partial listing invented a total";
+  return eq(usedMbOf([{ object: "DATABASE TOTAL", size_mb: 204.2 }]), 204.2, "total");
 });
 
 // ----------------------------------------------------------------

@@ -2594,6 +2594,67 @@ code now fail on it.
 
 ---
 
+## 11e. Failure alerts — the two channels, and why one is not enough
+*(2026-09-16)*
+
+§6.5 has said since the beginning that `fetch_job_log` backs "failure alerts for the
+daily and quarterly jobs". The table was written after every run and read by nothing.
+The nightly pipeline then failed on four consecutive nights, and the way that was
+discovered was a person opening the Actions tab and looking.
+
+**Channel one — `notify.mjs --failure`, wired to the nightly job's `if: failure()`
+hook.** Fast, and it names the step. It fires for any failing step including the
+capacity check, and never on a green night.
+
+**Channel two — `notify.mjs --watchdog`, on its own cron in `watchdog.yml`
+(03:30 UTC / 09:00 IST, after the nightly run and before the market opens).** This is
+the one that matters, because channel one can only fire when the job *runs* and fails.
+It is silent when the workflow is disabled, when GitHub skips a cron under load, when
+a dormant repository has its schedules suspended, and when a run succeeds while
+publishing nothing. Every one of those has precedent or near-precedent here —
+`daily.yml` spent a day disabled because the button to re-enable it does not render on
+a phone, which is precisely the situation the owner travels in.
+
+The watchdog asks the only question that survives all of them: **how old is the data
+on the screen?** It runs from a workflow the nightly job cannot affect, so two
+independent crons would both have to fail on the same night.
+
+**Design rules, each one earned:**
+
+- **An unconfigured alerter must not look healthy.** With no API key, `notify.mjs`
+  still performs every check, still exits non-zero when something is wrong, and prints
+  the full alert to the log. The failure mode of alerting is silence, so silence is
+  never the answer to a real finding.
+- **A broken alerter must not disguise the failure it was reporting.** The nightly
+  hook is `continue-on-error: true`, so an undeliverable alert cannot rewrite which
+  step the run's conclusion points at.
+- **Only errors are mailed.** Warnings — a class lagging the rest, a two-year capacity
+  trajectory — are printed as annotations. An inbox that receives something every day
+  is one nobody opens, which is the state this replaces rather than repeats.
+- **The staleness threshold is 4 days**, tolerating a weekend plus a holiday. An Indian
+  holiday cluster can occasionally exceed it and produce one false alert. That is the
+  right way round: a spurious mail costs a minute, and the silent pipeline cost four
+  days.
+- **A check that could not run is a finding, not a pass.** An unreadable capacity RPC
+  reports itself rather than evaluating to healthy.
+
+**`meridian-health.js` holds both halves, separated on purpose:** `collectHealth`
+touches the database and does not judge; `evaluateHealth` judges and touches nothing.
+Only the second needs testing, and it can be tested exhaustively with no network, no
+database and no secret — 13 checks, each negative-tested by deleting the check it
+covers. `db_report.mjs` now prints from the same two functions, so the report and the
+alert cannot disagree about whether Meridian is healthy.
+
+**Setup is the owner's, and until it is done the alerts degrade rather than lie:** a
+Resend API key and the destination address go in `RESEND_API_KEY` and `ALERT_EMAIL`.
+Resend's shared sender `onboarding@resend.dev` needs no DNS and is the default, so a
+domain (§8) is not a prerequisite for mail to the account owner's own address —
+anything wider needs the verified domain. Note that Resend's public documentation does
+not spell that restriction out; if the first alert bounces, the response body is
+printed in full in the run log and names the cause.
+
+---
+
 ## 12. Source of Truth for Code
 
 `meridian.jsx` in this repository is the current, authoritative application source —
