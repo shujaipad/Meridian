@@ -3034,6 +3034,46 @@ Browser checks: 29 → 36.
 
 ---
 
+## 11j. Narrow screens
+*(2026-09-17)*
+
+Every browser check in this project had only ever run at 1680×1050. The first outside
+users were about to open Meridian on phones, so it was measured at 390px for the first
+time: **the document was 500px wide in a 390px viewport.** Every vertical scroll fought
+a horizontal one, and the Currencies tab sat entirely off-screen — one of five asset
+classes, unreachable.
+
+**The rule, now asserted rather than eyeballed: the page never scrolls sideways. Wide
+things scroll inside their own containers.**
+
+The cause was narrow. The six tab strips were flex rows with no overflow handling and
+children that shrink by default, so "Global Indices" squeezed onto two lines and
+"Currencies" pushed the document wider than the screen. The tables — eighteen columns,
+1,413px — were never the problem: they were already wrapped in scrollers. Hence a small
+fix: `overflow-x: auto` on the strips, `flex-shrink: 0` on their buttons, and a
+`clamp()` gutter so 24px of side padding on a desktop is not a tenth of the width on a
+phone. The header's meta row also wrapped mid-phrase — "2138 stocks / loaded" — because
+the count was a bare string in a flex row with nothing telling it to stay whole.
+
+**Something that did not earn its place.** A media query tightening cell padding and
+font size below 640px seemed obviously worth having. Measured: **4 of 18 columns visible
+before, 4 after; 3 rows before, 3 after.** Column widths come from content, not padding.
+The change did nothing, its comment claimed otherwise, and it was removed rather than
+kept on the strength of the claim.
+
+Three viewports are now checked — 360, 390 and 768 — asserting both that the page does
+not overflow and that the table still scrolls inside its container, because fixing
+overflow by clipping the data would be worse than the overflow. Negative-tested:
+reverting the strip fix fails 360 and 390 and leaves 768 passing, which is right — the
+tabs fit at 768.
+
+**Not addressed, and worth knowing before the feedback arrives:** a phone shows four of
+eighteen columns and the rest need a horizontal swipe within the table. That is inherent
+to putting a dense table on a 390px screen, and a genuine fix is a different layout for
+small screens, not a tweak. Browser checks: 36 → 42.
+
+---
+
 ## 12. Source of Truth for Code
 
 `meridian.jsx` in this repository is the current, authoritative application source —

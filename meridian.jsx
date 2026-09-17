@@ -36,8 +36,33 @@ const T = {
   neutral: "#8890A6",
 };
 
+// ---------- Narrow screens ----------
+// THE PAGE MUST NEVER SCROLL SIDEWAYS; individual wide things scroll inside
+// themselves. Measured on a 390px viewport before this existed: the document was
+// 500px wide, so every vertical scroll fought a horizontal one, the Currencies tab
+// sat entirely off-screen, and the two tab rows were the cause -- flex children that
+// will not shrink, in a container with no overflow handling. The tables were already
+// wrapped in scrollers and were never the problem, which is why the fix is small.
+//
+// A tab strip scrolls horizontally on its own. The scrollbar is hidden because a
+// visible one costs a row of height on the exact screens that have none to spare, and
+// a strip that is obviously cut off at the edge already reads as scrollable.
+const tabStrip = {
+  display: "flex", gap: 0, overflowX: "auto", overflowY: "hidden",
+  WebkitOverflowScrolling: "touch", scrollbarWidth: "none", msOverflowStyle: "none",
+};
+// Flex items shrink by default, which on a narrow screen squeezes "Global Indices"
+// into two lines and then clips it. These keep their size and let the strip scroll.
+const tabItem = { flexShrink: 0, whiteSpace: "nowrap" };
+// 24px of side padding is right on a desktop and a tenth of the width on a phone.
+const gutter = "clamp(12px, 4vw, 24px)";
+
 const FONTS = `
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+/* scrollbarWidth: "none" covers Firefox; WebKit needs this and it cannot be
+   expressed as an inline style. */
+.meridian-tabs::-webkit-scrollbar { display: none; }
 `;
 
 // ---------- Sample / demo data (clearly synthetic, for pilot only) ----------
@@ -1799,7 +1824,7 @@ export default function App({ dataset = null }) {
       `}</style>
 
       {/* Header */}
-      <div style={{ borderBottom: `1px solid ${T.border}`, padding: "18px 24px", display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+      <div style={{ borderBottom: `1px solid ${T.border}`, padding: `18px ${gutter}`, display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
         <div>
           <div style={{ fontFamily: "'IBM Plex Serif', serif", fontSize: 22, fontWeight: 600, letterSpacing: "-0.01em", color: T.gold }}>Meridian</div>
           <div style={{ fontSize: 12, color: T.textDim, marginTop: 2 }}>
@@ -1808,9 +1833,17 @@ export default function App({ dataset = null }) {
               : `Technical signal ledger — ${ASSET_CLASSES[activeAssetClass].label}`}
           </div>
         </div>
-        <div style={{ fontSize: 11, color: T.textDim, fontFamily: "'IBM Plex Mono', monospace", display: "flex", alignItems: "center", gap: 14 }}>
+        <div style={{
+          fontSize: 11, color: T.textDim, fontFamily: "'IBM Plex Mono', monospace",
+          display: "flex", alignItems: "center", gap: 14,
+          // Wrap BETWEEN the three items, never inside one. Without this the count was
+          // a bare string in a flex row and broke as "2138 stocks / loaded".
+          flexWrap: "wrap", rowGap: 6,
+        }}>
           {activeAssetClass === "equities"
-            ? (hasData ? `${computed.length} stocks loaded${usingSample ? " · DEMO DATA" : ""}` : "No data loaded")
+            ? (<span style={{ whiteSpace: "nowrap" }}>
+                {hasData ? `${computed.length} stocks loaded${usingSample ? " · DEMO DATA" : ""}` : "No data loaded"}
+              </span>)
             : null}
           <PricesAsOn asOf={activeAsOf} accent={activeAccent} />
           <span style={{ position: "relative" }}>
@@ -1834,7 +1867,7 @@ export default function App({ dataset = null }) {
       </div>
 
       {/* Top-level asset class tabs */}
-      <div style={{ display: "flex", gap: 0, padding: "0 24px", borderBottom: `1px solid ${T.border}`, background: T.surface }}>
+      <div className="meridian-tabs" style={{ ...tabStrip, padding: `0 ${gutter}`, borderBottom: `1px solid ${T.border}`, background: T.surface }}>
         {[
           { key: "equities", label: "Equities", accent: T.gold },
           { key: "commodities", label: "Commodities", accent: ASSET_CLASSES.commodities.accent },
@@ -1843,6 +1876,7 @@ export default function App({ dataset = null }) {
           { key: "currencies", label: "Currencies", accent: ASSET_CLASSES.currencies.accent },
         ].map((tab) => (
           <button key={tab.key} onClick={() => setActiveAssetClass(tab.key)} style={{
+            ...tabItem,
             padding: "10px 18px", border: "none", borderBottom: `2px solid ${activeAssetClass === tab.key ? tab.accent : "transparent"}`,
             background: "transparent", color: activeAssetClass === tab.key ? tab.accent : T.textDim, fontSize: 13, fontWeight: 600,
           }}>{tab.label}</button>
@@ -1851,13 +1885,14 @@ export default function App({ dataset = null }) {
 
       {/* Sub-tabs, per asset class */}
       {activeAssetClass === "equities" && (
-        <div style={{ display: "flex", gap: 0, padding: "0 24px", borderBottom: `1px solid ${T.border}`, background: T.surfaceAlt }}>
+        <div className="meridian-tabs" style={{ ...tabStrip, padding: `0 ${gutter}`, borderBottom: `1px solid ${T.border}`, background: T.surfaceAlt }}>
           {[
             { key: "stocks", label: "Stocks" }, { key: "breakout", label: "Golden Breakout" },
             { key: "sectoral", label: "Sectoral" }, { key: "sectoralBreakout", label: "Sectoral Breakout" },
             { key: "breadth", label: "Market Breadth" },
           ].map((tab) => (
             <button key={tab.key} onClick={() => setEquitiesSubTab(tab.key)} style={{
+              ...tabItem,
               padding: "8px 14px", border: "none", borderBottom: `2px solid ${equitiesSubTab === tab.key ? T.gold : "transparent"}`,
               background: "transparent", color: equitiesSubTab === tab.key ? T.gold : T.textDim, fontSize: 11.5, fontWeight: 600,
             }}>{tab.label}</button>
@@ -1865,9 +1900,10 @@ export default function App({ dataset = null }) {
         </div>
       )}
       {activeAssetClass === "commodities" && (
-        <div style={{ display: "flex", gap: 0, padding: "0 24px", borderBottom: `1px solid ${T.border}`, background: T.surfaceAlt }}>
+        <div className="meridian-tabs" style={{ ...tabStrip, padding: `0 ${gutter}`, borderBottom: `1px solid ${T.border}`, background: T.surfaceAlt }}>
           {[{ key: "base", label: "Commodities" }, { key: "breakout", label: "Golden Breakout" }].map((tab) => (
             <button key={tab.key} onClick={() => setCommoditiesSubTab(tab.key)} style={{
+              ...tabItem,
               padding: "8px 14px", border: "none", borderBottom: `2px solid ${commoditiesSubTab === tab.key ? ASSET_CLASSES.commodities.accent : "transparent"}`,
               background: "transparent", color: commoditiesSubTab === tab.key ? ASSET_CLASSES.commodities.accent : T.textDim, fontSize: 11.5, fontWeight: 600,
             }}>{tab.label}</button>
@@ -1875,9 +1911,10 @@ export default function App({ dataset = null }) {
         </div>
       )}
       {activeAssetClass === "indices" && (
-        <div style={{ display: "flex", gap: 0, padding: "0 24px", borderBottom: `1px solid ${T.border}`, background: T.surfaceAlt }}>
+        <div className="meridian-tabs" style={{ ...tabStrip, padding: `0 ${gutter}`, borderBottom: `1px solid ${T.border}`, background: T.surfaceAlt }}>
           {[{ key: "base", label: "Global Indices" }, { key: "breakout", label: "Golden Breakout" }].map((tab) => (
             <button key={tab.key} onClick={() => setIndicesSubTab(tab.key)} style={{
+              ...tabItem,
               padding: "8px 14px", border: "none", borderBottom: `2px solid ${indicesSubTab === tab.key ? ASSET_CLASSES.indices.accent : "transparent"}`,
               background: "transparent", color: indicesSubTab === tab.key ? ASSET_CLASSES.indices.accent : T.textDim, fontSize: 11.5, fontWeight: 600,
             }}>{tab.label}</button>
@@ -1885,9 +1922,10 @@ export default function App({ dataset = null }) {
         </div>
       )}
       {activeAssetClass === "crypto" && (
-        <div style={{ display: "flex", gap: 0, padding: "0 24px", borderBottom: `1px solid ${T.border}`, background: T.surfaceAlt }}>
+        <div className="meridian-tabs" style={{ ...tabStrip, padding: `0 ${gutter}`, borderBottom: `1px solid ${T.border}`, background: T.surfaceAlt }}>
           {[{ key: "base", label: "Crypto" }, { key: "breakout", label: "Golden Breakout" }].map((tab) => (
             <button key={tab.key} onClick={() => setCryptoSubTab(tab.key)} style={{
+              ...tabItem,
               padding: "8px 14px", border: "none", borderBottom: `2px solid ${cryptoSubTab === tab.key ? ASSET_CLASSES.crypto.accent : "transparent"}`,
               background: "transparent", color: cryptoSubTab === tab.key ? ASSET_CLASSES.crypto.accent : T.textDim, fontSize: 11.5, fontWeight: 600,
             }}>{tab.label}</button>
@@ -1895,9 +1933,10 @@ export default function App({ dataset = null }) {
         </div>
       )}
       {activeAssetClass === "currencies" && (
-        <div style={{ display: "flex", gap: 0, padding: "0 24px", borderBottom: `1px solid ${T.border}`, background: T.surfaceAlt }}>
+        <div className="meridian-tabs" style={{ ...tabStrip, padding: `0 ${gutter}`, borderBottom: `1px solid ${T.border}`, background: T.surfaceAlt }}>
           {[{ key: "base", label: "Currencies" }, { key: "breakout", label: "Golden Breakout" }].map((tab) => (
             <button key={tab.key} onClick={() => setCurrenciesSubTab(tab.key)} style={{
+              ...tabItem,
               padding: "8px 14px", border: "none", borderBottom: `2px solid ${currenciesSubTab === tab.key ? ASSET_CLASSES.currencies.accent : "transparent"}`,
               background: "transparent", color: currenciesSubTab === tab.key ? ASSET_CLASSES.currencies.accent : T.textDim, fontSize: 11.5, fontWeight: 600,
             }}>{tab.label}</button>

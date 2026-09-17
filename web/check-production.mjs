@@ -192,6 +192,40 @@ const recovery = await page.locator("body").innerText();
 check("recovery link shows the set-password screen", /Choose a new password/.test(recovery), true);
 check("set-password asks for confirmation", /Confirm it/.test(recovery), true);
 
+// --- narrow screens -----------------------------------------------------------
+// Added 2026-09-17, when the first outside users were about to open this on phones
+// and every check in this file had only ever run at 1680x1050. The document was 500px
+// wide in a 390px viewport: every vertical scroll fought a horizontal one and the
+// Currencies tab sat entirely off-screen.
+//
+// The rule, asserted rather than eyeballed: THE PAGE NEVER SCROLLS SIDEWAYS. Wide
+// things — the tab strips, the eighteen-column tables — scroll inside their own
+// containers. A screenshot cannot tell you this and a person looking at one will not
+// notice 20px of overflow; scrollWidth will.
+for (const [label, width, height] of [["360px", 360, 740], ["390px", 390, 844], ["768px", 768, 1024]]) {
+  const narrow = await browser.newPage({ viewport: { width, height } });
+  await narrow.goto(URL_BASE, { waitUntil: "networkidle" });
+  await narrow.waitForTimeout(1800);
+  const m = await narrow.evaluate(() => ({
+    doc: document.documentElement.scrollWidth,
+    win: window.innerWidth,
+    // The tables must still be reachable — fixing overflow by clipping them would be
+    // worse than the overflow.
+    tableScrolls: (() => {
+      const t = document.querySelector("table");
+      let el = t?.parentElement;
+      while (el) {
+        if (/auto|scroll/.test(getComputedStyle(el).overflowX)) return el.scrollWidth > el.clientWidth;
+        el = el.parentElement;
+      }
+      return false;
+    })(),
+  }));
+  check(`${label}: the page does not scroll sideways`, m.doc <= m.win + 2, true);
+  check(`${label}: the table still scrolls inside its own container`, m.tableScrolls, true);
+  await narrow.close();
+}
+
 // --- changing a password from inside the app ----------------------------------
 // The only way an invited user can replace the password the owner generated for them.
 // "Forgot password" cannot help: it sends a link, and this project has no way to
