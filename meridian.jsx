@@ -372,6 +372,7 @@ const FILTERABLE_COLUMNS = {
   pctFromHigh52: { label: "% fr 52wH", accessor: (s) => s.tech?.pctFromHigh52 },
   pctFromLow52: { label: "% fr 52wL", accessor: (s) => s.tech?.pctFromLow52 },
   volBreakout: { label: "Vol Breakout %", accessor: (s) => s.tech?.volBreakoutPct },
+  marketCap: { label: "Mkt Cap", accessor: (s) => s.MarketCap },
 };
 
 function NumFilterPopover({ colKey, label, current, onApply, onClear, onClose }) {
@@ -644,6 +645,7 @@ function GenericAssetScreen({ config, onAsOf, dataset = null }) {
         if (sortKey === "pctFromHigh52") return row.tech?.pctFromHigh52 ?? -Infinity;
         if (sortKey === "pctFromLow52") return row.tech?.pctFromLow52 ?? -Infinity;
         if (sortKey === "volBreakout") return row.tech?.volBreakoutPct ?? -Infinity;
+        if (sortKey === "marketCap") return row.MarketCap ?? -Infinity;
         return "";
       };
       const av = get(a), bv = get(b);
@@ -1028,7 +1030,14 @@ const GB_FILTERABLE = {
   volBreakout: { label: "Vol Breakout %", accessor: (s) => s.tech?.volBreakoutPct },
 };
 
-function GoldenBreakoutScreen({ candidates, accent = T.gold, hasFundamentals = true, itemLabel = "Stock" }) {
+// showMarketCap is its own prop rather than a second use of hasFundamentals, which is
+// true on exactly the same screen today. They mean different things: market cap is not
+// a fundamental, it comes from the company master, and it is carried on every asset
+// class's rows. Gating on hasFundamentals would work now and put a Mkt Cap column on
+// the commodities screen the day any non-equity class gains fundamentals -- a coupling
+// that is invisible until it breaks.
+function GoldenBreakoutScreen({ candidates, accent = T.gold, hasFundamentals = true,
+                                showMarketCap = false, itemLabel = "Stock" }) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState("separationPct");
   const [sortDir, setSortDir] = useState(-1);
@@ -1065,6 +1074,12 @@ function GoldenBreakoutScreen({ candidates, accent = T.gold, hasFundamentals = t
       )}
     </th>
   );
+
+  // Derived, not restated. The expanded detail row spans the whole table, and its
+  // colSpan was a literal that had to be kept in step with the header by hand --
+  // adding one column silently leaves the detail row a cell short, which shows up as a
+  // subtly misaligned table rather than as an error.
+  const columnCount = 8 + (hasFundamentals ? 1 : 0) + (showMarketCap ? 1 : 0);
 
   const filtered = useMemo(() => {
     let list = candidates.filter((s) =>
@@ -1129,6 +1144,7 @@ function GoldenBreakoutScreen({ candidates, accent = T.gold, hasFundamentals = t
                 <th></th>
                 <th onClick={() => toggleSort("Name")} style={{ cursor: "pointer" }}>{itemLabel}{sortArrow("Name")}</th>
                 <th onClick={() => toggleSort("CMP")} style={{ cursor: "pointer" }}>CMP{sortArrow("CMP")}</th>
+                {showMarketCap && <FilterableTh colKey="marketCap" label="Mkt Cap" />}
                 <FilterableTh colKey="changePct" label="1D %" />
                 {hasFundamentals && <FilterableTh colKey="fundScore" label="Fund Score" />}
                 <FilterableTh colKey="separationPct" label="Separation %" />
@@ -1148,6 +1164,11 @@ function GoldenBreakoutScreen({ candidates, accent = T.gold, hasFundamentals = t
                       <td>{isOpen ? <ChevronDown size={14} color={T.textDim} /> : <ChevronRight size={14} color={T.textDim} />}</td>
                       <td style={{ fontWeight: 600 }}>{s.Name}<div style={{ fontSize: 10, color: T.textDim, fontFamily: "'IBM Plex Mono', monospace" }}>{s.Symbol}</div></td>
                       <td style={{ fontFamily: "'IBM Plex Mono', monospace" }}>{t ? `₹${fmtNum(t.cmp, 2)}` : "—"}</td>
+                      {showMarketCap && (
+                        <td style={{ fontFamily: "'IBM Plex Mono', monospace" }}>
+                          {s.MarketCap != null ? fmtCr(s.MarketCap) : "—"}
+                        </td>
+                      )}
                       <td style={{ fontFamily: "'IBM Plex Mono', monospace", color: t?.changePct > 0 ? T.gain : t?.changePct < 0 ? T.loss : T.textDim }}>{t ? fmtPct(t.changePct) : "—"}</td>
                       {hasFundamentals && <td><FundTierBadge fundScore={f?.score} /></td>}
                       <td style={{ fontFamily: "'IBM Plex Mono', monospace", color: T.gain }}>{t ? fmtPct(t.separationPct, 1) : "—"}</td>
@@ -1157,7 +1178,7 @@ function GoldenBreakoutScreen({ candidates, accent = T.gold, hasFundamentals = t
                     </tr>
                     {isOpen && (
                       <tr>
-                        <td colSpan={hasFundamentals ? 9 : 8} style={{ background: T.surface, padding: "16px 20px", borderBottom: `1px solid ${T.border}` }}>
+                        <td colSpan={columnCount} style={{ background: T.surface, padding: "16px 20px", borderBottom: `1px solid ${T.border}` }}>
                           <div style={{ display: "grid", gridTemplateColumns: hasFundamentals ? "1fr 1fr" : "1fr", gap: 24 }}>
                             <div>
                               <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em", color: accent, marginBottom: 8 }}>Golden Breakout gates</div>
@@ -2259,7 +2280,7 @@ export default function App({ dataset = null }) {
       )}
 
       {activeAssetClass === "equities" && equitiesSubTab === "breakout" && (
-        <GoldenBreakoutScreen candidates={goldenBreakoutCandidates} accent={T.gold} hasFundamentals={true} itemLabel="Stock" />
+        <GoldenBreakoutScreen candidates={goldenBreakoutCandidates} accent={T.gold} hasFundamentals={true} showMarketCap={true} itemLabel="Stock" />
       )}
       {activeAssetClass === "equities" && equitiesSubTab === "sectoral" && (
         <SectoralScreen computed={sectoralComputed} accent={T.gold} />

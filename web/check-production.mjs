@@ -178,6 +178,50 @@ await page.waitForTimeout(1500);
 check("equity screen still shows only equities (2138, not 2240)",
       /2138 stocks loaded/.test(await body()), true);
 
+// NOTE ON PLACEMENT: this runs BEFORE the recovery/invite checks, which deliberately
+// leave the app on the set-password screen. Put after them, its very first click waits
+// thirty seconds for an "Equities" button that is not on screen. The same ordering trap
+// cost the invite check a false pass yesterday -- state left behind by an earlier check
+// is the sharpest edge in this file.
+// --- market cap on the equities breakout screen -------------------------------
+// Added 2026-09-17 on request. The assertion that matters is not that the column
+// exists but that it exists on ONE screen: GoldenBreakoutScreen is shared by all five
+// asset classes, so "add a column" is one prop away from adding it to commodities and
+// crypto as well.
+await page.locator('button:text-is("Equities")').first().click();
+await page.waitForTimeout(400);
+await page.locator('button:text-is("Golden Breakout")').first().click();
+await page.waitForTimeout(900);
+const gbHead = () => page.evaluate(() =>
+  [...document.querySelectorAll("table thead th")].map((t) => t.innerText.trim()));
+const eqHeaders = await gbHead();
+check("equities breakout has a Mkt Cap column", eqHeaders.some((h) => /MKT CAP/i.test(h)), true);
+check("it shows a value, not a dash", await page.evaluate(() => {
+  const i = [...document.querySelectorAll("table thead th")].findIndex((t) => /MKT CAP/i.test(t.innerText));
+  const cell = document.querySelector("table tbody tr")?.querySelectorAll("td")[i];
+  return /₹[\d,]+ Cr/.test(cell?.innerText ?? "");
+}), true);
+// The expanded detail row spans the table; a hardcoded colSpan would now be short.
+await page.locator("table tbody tr").first().click();
+await page.waitForTimeout(500);
+check("the expanded row still spans every column", await page.evaluate(() => {
+  const td = document.querySelector("table tbody tr td[colspan]");
+  return Number(td?.getAttribute("colspan")) === document.querySelectorAll("table thead th").length;
+}), true);
+
+for (const cls of ["Commodities", "Crypto"]) {
+  await page.locator(`button:text-is("${cls}")`).first().click();
+  await page.waitForTimeout(400);
+  await page.locator('button:text-is("Golden Breakout")').first().click();
+  await page.waitForTimeout(800);
+  const h = await gbHead();
+  check(`${cls} breakout has no Mkt Cap column`, h.some((x) => /MKT CAP/i.test(x)), false);
+}
+await page.locator('button:text-is("Equities")').first().click();
+await page.waitForTimeout(400);
+await page.locator('button:text-is("Stocks")').first().click();
+await page.waitForTimeout(800);
+
 // --- password recovery ------------------------------------------------------
 // Added 2026-09-11. The switch to password sign-in shipped signInWithPassword and no
 // way to recover one, so every forgotten password was a manual job for the owner
