@@ -166,6 +166,23 @@ console.log("\n  health");
 if (!findings.length) console.log("    nothing to report");
 for (const f of findings) console.log(`    [${f.level}] ${f.code}: ${f.message.split("\n")[0]}`);
 
+// THIS STEP RUNS LAST, WHICH IS WHY THE RUN FAILS HERE RATHER THAN EARLIER.
+//
+// daily_fetch now tolerates a partial fetch failure so that a transient outage on a
+// tenth of the universe does not cost the other nine tenths their day (see
+// FAILURE_TOLERANCE there). But tolerating it must not mean hiding it: it writes
+// status "failure" to fetch_job_log, evaluateHealth turns that into an error finding,
+// and this turns the finding into a red run -- after the screens, the workbook and
+// the git mirror have all been published.
+//
+// Publish first, then fail visibly. A green run with 252 instruments silently stuck
+// on Friday is the exact shape of defect this project keeps finding.
+const errors = findings.filter((f) => f.level === "error");
+if (errors.length) {
+  console.error("");
+  for (const f of errors) console.error(`::error::${f.message.split("\n")[0]}`);
+}
+
 // ---- the part that makes this a check rather than a printout -----------------
 //
 // A percentage alone would not have caught this. On day one prices_daily was 368MB of
@@ -229,3 +246,10 @@ if (usedMb != null) {
 }
 console.log("--------------------------------------------------------------\n");
 console.log(`  this report: ${meterLine(db.meter)}`);
+// LAST LINE OF THE LAST STEP, and the position is the point twice over. Everything
+// downstream of the fetch has already published by now, so a non-zero exit reports
+// the night without costing it -- and it comes after the egress line rather than
+// before, because anything placed after a process.exit() simply never runs. That
+// error has been made once already in this codebase, in check-production.mjs, where
+// two checks sat below an exit and read like coverage while being unable to execute.
+if (errors.length) process.exit(1);

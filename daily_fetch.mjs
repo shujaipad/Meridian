@@ -104,6 +104,20 @@ async function chart(ticker, range, withEvents) {
       const res = await fetch(url, { headers: UA, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
       tally(res.status);
       if (res.status === 429) throw new Error("429 rate limited");
+      // A 404 IS NOT RETRIED, and on 2026-09-21 that mattered more than it looks.
+      //
+      // Either the ticker does not exist, in which case three more requests cannot
+      // conjure it, or the far end is shedding load behind a 404, in which case three
+      // more requests make it worse. Both readings point the same way, so the code no
+      // longer has to guess which one is true.
+      //
+      // What it cost when it did retry: 252 instruments failed and the tally recorded
+      // 1,008 404s -- exactly four apiece. Failures accelerated as the run went on (0
+      // at 400 swept, 55 at 1,300, 252 at the end) and the run took 54 minutes instead
+      // of 20, because every failure bought itself 14 seconds of backoff and three
+      // extra requests against a server that was already refusing. The retry was
+      // feeding the thing it was retrying around.
+      if (res.status === 404) { const e = new Error("HTTP 404"); e.noRetry = true; throw e; }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       const result = json?.chart?.result?.[0];
@@ -113,6 +127,7 @@ async function chart(ticker, range, withEvents) {
       lastErr = e;
       if (e?.name === "TimeoutError" || e?.name === "AbortError") tally("timeout");
       else if (!/^(429|HTTP )/.test(String(e?.message))) tally(String(e?.message).slice(0, 24));
+      if (e?.noRetry) throw e;
       if (attempt < 3) {
         const wait = 2 ** attempt * 1000 + Math.random() * 500;
         // Logged, not swallowed. Silent retries are why an hour of backoff looked
@@ -429,11 +444,44 @@ if (!DRY) {
 
 recordEgress("fetch", db.meter, BASE);
 console.log(`\n${((Date.now() - t0) / 60000).toFixed(1)} min — ${meterLine(db.meter)}`);
+// WHAT A PARTIAL FAILURE SHOULD COST, and it should not be everyone else's day.
+//
+// This used to exit non-zero on a single failed instrument, which skipped compute,
+// publish, the workbook and the git mirror. On 2026-09-21 Yahoo shed 252 of 2,238
+// instruments for about an hour -- every one of them served again within the hour --
+// and the other 1,986 had fetched perfectly. The screens stayed on Friday's close
+// anyway, and the day's bars for 89% of the universe were thrown away with the 11%.
+//
+// The two questions were tangled together and are now separate:
+//   DID THE DATA LAND?      fetch_job_log says "failure" whenever anything failed,
+//                           which the watchdog reads and alerts on (§11e).
+//   SHOULD DOWNSTREAM RUN?  yes, up to a point -- publishing 1,986 current
+//                           instruments beats publishing none.
+//
+// Above the tolerance it still refuses. A fifth of the universe missing is no longer
+// a blip, and stamping a batch as-of date on a computation that is missing that much
+// is a claim the data does not support.
+//
+// No watermark moved for any failure, so tomorrow's sweep retries them untouched --
+// which is exactly what made the 2026-09-21 outage self-healing once it stopped
+// blocking the publish.
+const FAILURE_TOLERANCE = 0.15;
 if (failures.length) {
-  console.error(`\n${failures.length} FAILURE(S):`);
+  const share = failures.length / Math.max(targets.length, 1);
+  console.error(`\n${failures.length} FAILURE(S) — ${(share * 100).toFixed(1)}% of ${targets.length}:`);
   failures.slice(0, 40).forEach((f) => console.error(`  ${f.symbol}: ${f.error}`));
-  // Non-zero so the scheduler surfaces it. The watermark never advanced for these,
-  // so tomorrow's sweep retries them without any manual intervention.
-  process.exit(1);
+  if (failures.length > 40) console.error(`  ... and ${failures.length - 40} more`);
+  console.error(`http status counts: ${tallyLine()}`);
+
+  if (share > FAILURE_TOLERANCE) {
+    console.error(`\nOver the ${(FAILURE_TOLERANCE * 100).toFixed(0)}% tolerance — not publishing.`);
+    console.error("No watermark moved; tomorrow's sweep retries every one of them.");
+    process.exit(1);
+  }
+  // Under tolerance: downstream runs. The job log already carries status "failure",
+  // so this is recorded rather than forgiven -- see the fetch_job_log insert above.
+  console.log(`\n::warning::${failures.length} instrument(s) did not fetch `
+            + `(${(share * 100).toFixed(1)}%, under the ${(FAILURE_TOLERANCE * 100).toFixed(0)}% tolerance). `
+            + "Publishing the rest; their watermarks did not move, so tomorrow retries them.");
 }
 console.log("no failures");

@@ -544,6 +544,41 @@ await check("append filenames are immutable — a second run takes a suffix", ()
   return eq(nextAppendName("2026-09-18", (f) => have.has(f)), "2026-09-18.csv", "a fresh day");
 });
 
+// ---------------------------------------------------------------- partial failures
+console.log("\npartial fetch failures");
+
+// The 2026-09-21 shape: Yahoo shed 252 of 2,238 instruments for about an hour, every
+// one served again within the hour. The old code exited non-zero on a single failure,
+// so compute, publish, the workbook and the git mirror were all skipped and the
+// screens stayed on Friday's close -- the day's bars for 89% of the universe thrown
+// away with the 11%.
+const TOLERANCE = 0.15;
+const publishes = (failed, swept) => failed / swept <= TOLERANCE;
+
+await check("a tenth of the universe failing still publishes the rest", () =>
+  publishes(252, 2238) ? null : "252 of 2,238 would still block the publish");
+
+await check("a fifth failing does not", () =>
+  publishes(450, 2238) ? "450 of 2,238 would publish — that is too much missing" : null);
+
+await check("a single failure does not block anything", () =>
+  publishes(1, 2238) ? null : "one instrument still blocks the night");
+
+await check("every instrument failing is refused", () =>
+  publishes(2238, 2238) ? "a total outage would publish" : null);
+
+// A 404 is either a dead ticker or a server shedding load. Retrying helps in neither
+// case, and the tally proved the cost: 252 failures produced exactly 1,008 404s.
+await check("a 404 is not retried", () => {
+  const src = readFileSync(new URL("./daily_fetch.mjs", import.meta.url), "utf8");
+  if (!/res\.status === 404/.test(src)) return "no 404 branch in chart()";
+  if (!/noRetry/.test(src)) return "the 404 branch does not stop the retry loop";
+  // and the guard must sit before the backoff, or it changes nothing
+  const guard = src.indexOf("e?.noRetry");
+  const backoff = src.indexOf("2 ** attempt * 1000");
+  return guard > 0 && guard < backoff ? null : "the noRetry check is after the backoff";
+});
+
 // ---------------------------------------------------------------- health
 console.log("\nhealth checks");
 
@@ -594,6 +629,15 @@ await check("a failed job log entry is an error", () => {
   const f = evalWith({ jobs: [{ job_type: "daily", status: "failure", message: "3 failed" }] });
   const j = f.find((x) => x.code === "job-failed");
   return j && j.level === "error" ? null : "a failed run was not reported";
+});
+
+// Tolerating is not forgiving: the job log still says failure, evaluateHealth still
+// errors on it, and db_report still turns that into a red run -- after publishing.
+await check("a tolerated failure still reports as a failed job", () => {
+  const f = evalWith({ jobs: [{ job_type: "daily", status: "failure",
+                                message: "swept 2238, +5770 bars, 53 re-pulled, 252 failed" }] });
+  const j = f.find((x) => x.code === "job-failed");
+  return j && j.level === "error" ? null : "a tolerated partial failure went unreported";
 });
 
 await check("capacity past the threshold is an error", () => {
