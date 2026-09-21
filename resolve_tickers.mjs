@@ -43,17 +43,27 @@ function candidates(row) {
   return out;
 }
 
+// What the remote actually said, tallied. Without it a refusal to overwrite the map
+// cannot tell you WHY the run resolved fewer instruments -- throttling, timeouts and a
+// genuine wave of delistings all arrive as "unresolved".
+const httpTally = {};
+const tally = (k) => { httpTally[k] = (httpTally[k] || 0) + 1; };
+const tallyLine = () => Object.entries(httpTally).sort().map(([k, v]) => `${k}:${v}`).join(" ") || "none";
+
 async function bars(ticker) {
   try {
     const r = await fetch(`${CHART}${encodeURIComponent(ticker)}?range=5d&interval=1d`,
                           { headers: UA, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    tally(r.status);
     if (!r.ok) return { ok: false, status: r.status };
     const j = await r.json();
     const res = j?.chart?.result?.[0];
     const closes = (res?.indicators?.quote?.[0]?.close || []).filter((c) => c != null);
     return closes.length ? { ok: true, n: closes.length } : { ok: false, status: "no bars" };
   } catch (e) {
-    return { ok: false, status: e?.name === "TimeoutError" ? "timeout" : String(e.message).slice(0, 30) };
+    const why = e?.name === "TimeoutError" ? "timeout" : String(e.message).slice(0, 24);
+    tally(why);
+    return { ok: false, status: why };
   }
 }
 
@@ -80,10 +90,37 @@ for (const [i, row] of master.entries()) {
   }
 }
 
+// NEVER WRITE A WORSE MAP THAN THE ONE ALREADY COMMITTED.
+//
+// This overwrites the file that decides what the nightly job can fetch at all, and it
+// gets its answers from a remote that can refuse them. A run throttled halfway
+// resolves the rest as "no Yahoo listing", writes a map missing hundreds of
+// instruments, and the nightly job then skips them by name and reports success --
+// the failure mode being silent, permanent, and indistinguishable from those
+// instruments having been delisted.
+//
+// So the new map has to be at least as complete as the old one, less a small margin
+// for genuine delistings between runs. Anything worse is treated as evidence about
+// the RUN rather than about the universe, and the existing file is left alone.
+const MAX_SHRINKAGE = 0.02;
+let previous = 0;
+try { previous = readCSV("./meridian-yahoo-tickers.csv").length; } catch { previous = 0; }
+if (previous && resolved.length < previous * (1 - MAX_SHRINKAGE)) {
+  console.error(`\nRefusing to write: resolved ${resolved.length}, but the committed map has ${previous}.`);
+  console.error(`That is a ${(((previous - resolved.length) / previous) * 100).toFixed(1)}% drop, past the `
+              + `${(MAX_SHRINKAGE * 100).toFixed(0)}% allowed for genuine delistings.`);
+  console.error("A throttled run looks exactly like this. The existing map is unchanged;");
+  console.error("re-run when the remote is healthy, and compare before trusting the result.");
+  console.error(`\nhttp status counts: ${tallyLine()}`);
+  process.exit(1);
+}
+
 const out = ["ISIN,Symbol,YahooTicker",
              ...resolved.map((r) => `${r.ISIN},${r.Symbol},${r.YahooTicker}`)].join("\n") + "\n";
 writeFileSync("./meridian-yahoo-tickers.csv", out);
-console.log(`\nwrote meridian-yahoo-tickers.csv: ${resolved.length.toLocaleString()} resolved`);
+console.log(`\nwrote meridian-yahoo-tickers.csv: ${resolved.length.toLocaleString()} resolved`
+          + `${previous ? ` (was ${previous.toLocaleString()})` : ""}`);
+console.log(`http status counts: ${tallyLine()}`);
 if (failed.length) {
   console.log(`${failed.length} unresolved (no Yahoo listing found):`);
   failed.slice(0, 20).forEach((f) => console.log(`  ${f.Symbol} (${f.ISIN}) tried ${f.tried}`));
