@@ -46,10 +46,10 @@ what each defect had in common. As of the first green end-to-end run:
 | Nightly pipeline | Green and unattended; steady state ~3 flagged instruments a night |
 | Screens | All five asset classes, published same-day |
 | Workbook | Same day, same rows, same window as the screens (§11d) |
-| Database | ~204 MB of Supabase's 500 MB — 40.8%, growing ~114 MB/year |
+| Database | ~208 MB of Supabase's 500 MB — ~42%, growing ~114 MB/year (2026-09-28) |
 | Retention | 1,100 days, pruned nightly, so the table is flat rather than growing |
 | Alerting | Failure hook + independent watchdog (§11e) |
-| Checks | 58 pipeline self-checks, 29 browser checks, all negative-tested |
+| Checks | 89 pipeline self-checks, 65 browser checks, all negative-tested |
 
 The prototype this section used to describe — a single client-side artifact with
 user-uploaded CSVs and no automation — is still in the repository as `meridian.jsx`,
@@ -198,18 +198,22 @@ nightly pipeline (§6.3). No new infrastructure — Storage is already in the lo
   must not publish yesterday's screen under today's name.
 - RLS mirrors every other object: `authenticated` may `select`; writes have no policy at
   all, so only the pipeline's `service_role` can publish.
-- The frontend calls `createSignedUrl()` with the user's own session and gets a
-  short-lived URL. Access dies with the invitation:
+- **Shipped 2026-09-28, and not as originally specified.** The plan here was a
+  short-lived `createSignedUrl()`. What went in is a direct authenticated read, which
+  is simpler and has one fewer failure mode — no URL to expire mid-click, and nothing
+  handed to the browser that outlives the session:
 
   ```js
-  const { data, error } = await supabase.storage
-    .from("workbooks")
-    .createSignedUrl("daily/latest.xlsx", 60, { download: `meridian-${asOf}.xlsx` });
+  const { data, error } = await supabase.storage.from("workbooks").download("daily/latest.xlsx");
+  // → Blob → URL.createObjectURL → <a download={`meridian-${asOf}.xlsx`}>
   ```
 
-  `download` sets the filename the browser saves as, so every user's copy is dated
-  even though the object key is stable. The button is not wired into `meridian.jsx`
-  yet — the app has no Supabase client at all until the accounts exist (§9).
+  Either way access dies with the invitation: the read runs under the user's own
+  session against the `authenticated`-only select policy. The filename carries the
+  data's as-of date even though the object key is stable, so every user's copy is
+  dated. The control is `WorkbookDownload` in `web/src/main.jsx`, in the header beside
+  sign-out — deliberately global rather than on one screen, because the workbook
+  spans every screen.
 - **90-day retention**, pruned each run on the date in the filename rather than
   `created_at` (a re-published file would otherwise look young). ~775 KB × 90 ≈ **70 MB**,
   which sits inside the 500 MB budget alongside the ~150–170 MB of price history.
@@ -897,8 +901,9 @@ the master CSV, so this is reversible without re-sourcing data.
 - **Meridian is (and in production, must remain) a display and filtering layer, not a
   compute layer** (see §6.2 for the full architectural implication).
 - Sortable/filterable tables throughout, consistent interaction pattern across all
-  asset classes (sticky headers, per-column range filters via popovers, dropdown-expand
-  detail rows).
+  asset classes (sticky headers, per-column filters via popovers — a min/max range for
+  numbers, a multi-select checkbox list for categorical columns such as Sector (§11k) —
+  and dropdown-expand detail rows).
 - Color accents per asset class (gold=Equities, copper=Commodities, teal=Currencies,
   blue=Global Indices, purple=Crypto) — implemented as accent-prop overrides on a
   consistent base visual language, not full re-themes per asset class.
@@ -3071,6 +3076,72 @@ tabs fit at 768.
 eighteen columns and the rest need a horizontal swipe within the table. That is inherent
 to putting a dense table on a 390px screen, and a genuine fix is a different layout for
 small screens, not a tweak. Browser checks: 36 → 42.
+
+---
+
+## 11k. Filtering by sector, and a scrollbar nobody could see
+*(2026-09-28)*
+
+Two things the first outside users asked for within a week of each other, both about
+reaching data that was already on the screen.
+
+**The sector filter existed and was the wrong shape.** There was a `<select>` above the
+Stocks table listing every sector plus "All". It worked, and nobody found it: it sat in
+the filter bar while every *other* column filtered from its own header, behind the
+funnel icon. The one control that did not follow the pattern was the one being looked
+for. It was also single-select — "IT **and** Financials" was not a question it could
+answer — and it stayed invisible to the "*n* filters active" chip, so a sector filter
+left on could silently narrow the table with nothing on screen saying so.
+
+So the dropdown is gone and Sector filters from its column header like everything else.
+That needed a second filter kind: `FILTERABLE_COLUMNS` entries were all min/max ranges,
+and a sector is not a range. Entries may now carry `kind: "text"`, which renders
+`TextFilterPopover` — a checkbox list of the values actually present in the loaded
+universe, multi-select, with a search box (the live universe has **125 distinct
+sectors**, so a bare list would be unusable). Selections are staged locally and applied
+on Apply, so half-built selections do not re-render 2,138 rows. Applying with nothing
+ticked clears the filter rather than emptying the table, because an empty table behind
+an active filter chip is a dead end the reader has to guess their way out of.
+
+Two smaller decisions worth recording. A row with a missing sector is bucketed under
+`(unclassified)` and offered as a choice rather than dropped from the options — without
+that, those rows match no choice and there is no choice that finds them, so they are
+simply unreachable. (The live universe has none today; the bucket is there so that a
+future one is not lost.) And the per-row predicate is now one shared `matchesColFilters`
+used by all three filtering tables, rather than the same eight lines copied three
+times — the two kinds cannot drift apart between screens.
+
+**The scrollbar.** Each table lives in its own `70vh` scroller, so its scrollbar is the
+only thing saying there are more rows below the fold, and the only handle for dragging
+to them. It was styled `8px` wide with a thumb in `T.border` — the same colour as the
+table's own gridlines, on a dark background. Technically present, effectively absent.
+
+It is now full width and coloured `T.textDim` on `T.surface`. Two mechanisms, which do
+not fight: a browser that understands `scrollbar-color` ignores the `::-webkit-`
+pseudo-elements entirely, and one that does not ignores `scrollbar-color` and takes the
+pseudo-elements. `scrollbar-width` is deliberately *not* set — `thin` would make the bar
+narrower than the default, which is the opposite of the point. The tab strip keeps its
+hidden scrollbar under both (§11j: a visible bar there costs a row of height on the
+phone screens that have none to spare).
+
+**What the browser checks can and cannot prove here.** The bar's *width* is not
+measurable: headless Chromium draws overlay scrollbars, which take no layout space, so
+`offsetWidth - clientWidth` is 0 whatever the CSS says. What is checked is that the rule
+reaches the element and the browser accepted the colours (a rejected value computes to
+`auto`), that the container really scrolls, and that the tab strip is still hidden. The
+width check that remains — `scrollbar-width` is `auto` — passes on an unstyled page too;
+it is a regression guard against a future `thin`, not evidence the fix works, and is
+labelled as such.
+
+**Also fixed here:** the harness now serves an empty stylesheet for Google Fonts instead
+of fetching it. That request was its only dependency on the outside world, and behind a
+TLS-terminating proxy it failed and reported two page errors that had nothing to do with
+the app. The checks measure fallback fonts as a result, which is acceptable — none of
+them assert on typography and the layout checks pass either way — and the run is now the
+same offline as on.
+
+Browser checks: 50 → 65. Negative-tested: making the categorical branch always match
+fails four of the sector checks; removing `scrollbar-color` fails the colour check.
 
 ---
 

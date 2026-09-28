@@ -59,6 +59,16 @@ const check = (label, got, want) => {
   console.log(`  ${ok ? "ok  " : "FAIL"} ${label}: ${got}${ok ? "" : `  (expected ${want})`}`);
 };
 
+// The app pulls IBM Plex from Google Fonts. That is the only request this harness
+// makes to the outside world, and it makes the run depend on the network: behind a
+// TLS-terminating proxy it fails with ERR_CERT_AUTHORITY_INVALID and the run reports
+// two page errors that have nothing to do with the app. Serve an empty stylesheet
+// instead. The cost is that the checks measure fallback fonts rather than IBM Plex —
+// acceptable, because none of them assert on typography, and the layout checks pass
+// either way. The gain is a harness that runs the same offline as on.
+await page.route(/fonts\.(googleapis|gstatic)\.com/, (route) =>
+  route.fulfill({ status: 200, contentType: "text/css", body: "" }));
+
 await page.goto(URL_BASE, { waitUntil: "networkidle" });
 
 // Fail on the shell's own error screens before waiting on anything. Both of them
@@ -95,6 +105,98 @@ check("subtitle is not the stale NIFTY 50 pilot label", !/NIFTY 50 pilot/.test(s
 check("no upload controls in production", !/Company master/.test(stocks) && !/Load demo data/.test(stocks), true);
 check("universe filter is populated", /All Stocks \(2,?089\)|All Stocks \(2089\)/.test(stocks) || /All Stocks/.test(stocks), true);
 await page.screenshot({ path: "shots/prod-01-stocks.png" });
+
+// --- the Sector column filter -------------------------------------------------
+// Sector is the one categorical column, so it gets a multi-select checkbox list
+// instead of the min/max popover. The counts below come from the fixture itself
+// (110 Pharmaceuticals, 63 Textiles of 2,138) — if the filter drops or keeps the
+// wrong rows, these move.
+const bodyRowsBySector = () => page.evaluate(() => {
+  const heads = [...document.querySelectorAll("thead th")].map((h) => h.innerText.trim().toUpperCase());
+  const i = heads.findIndex((h) => h.startsWith("SECTOR"));
+  const out = [];
+  for (const r of document.querySelectorAll("tbody tr")) {
+    const cell = r.children[i];
+    // Expanded detail rows are a single wide cell and have no sector of their own.
+    if (cell && r.children.length === heads.length) out.push(cell.innerText.trim());
+  }
+  return out;
+});
+const sectorTh = page.locator("thead th").filter({ hasText: /^Sector/ }).first();
+const openSectorFilter = async () => {
+  await sectorTh.locator("button").first().click();
+  await page.waitForTimeout(250);
+};
+const tickSector = async (name) => {
+  await sectorTh.locator('input[placeholder*="Search sector"]').fill(name);
+  await page.waitForTimeout(150);
+  await sectorTh.locator("label", { hasText: name }).first().locator('input[type="checkbox"]').check();
+};
+
+check("every stock row starts visible", (await bodyRowsBySector()).length, 2138);
+check("the sector filter is in the column, not a separate dropdown",
+  await page.locator("select").count(), 0);
+await openSectorFilter();
+check("the Sector header opens a filter", await sectorTh.getByText(/^Filter Sector/).isVisible(), true);
+check("it lists sectors as choices, not a min/max box",
+  await sectorTh.locator('input[type="checkbox"]').count() > 0
+  && await sectorTh.locator('input[placeholder="Min"]').count() === 0, true);
+
+await tickSector("Pharmaceuticals");
+await sectorTh.getByRole("button", { name: "Apply" }).click();
+await page.waitForTimeout(600);
+let rows = await bodyRowsBySector();
+check("filtering to one sector keeps exactly its stocks", rows.length, 110);
+check("and every row shown really is that sector",
+  rows.every((r) => r === "Pharmaceuticals"), true);
+check("the active-filter chip counts it", /1 filter active/.test(await body()), true);
+
+await openSectorFilter();
+await tickSector("Textiles");
+await sectorTh.getByRole("button", { name: "Apply" }).click();
+await page.waitForTimeout(600);
+rows = await bodyRowsBySector();
+check("two sectors select the union, not the intersection", rows.length, 110 + 63);
+check("and nothing outside the two got through",
+  rows.every((r) => r === "Pharmaceuticals" || r === "Textiles"), true);
+await page.screenshot({ path: "shots/prod-01b-sector-filter.png" });
+
+await page.getByRole("button", { name: /filters? active/ }).click();
+await page.waitForTimeout(600);
+check("clearing the filters brings every stock back", (await bodyRowsBySector()).length, 2138);
+
+// --- the table's scrollbar ------------------------------------------------------
+// The table sits in its own 70vh scroller, so its scrollbar is the only handle for
+// reaching the rows below the fold. At 8px and coloured like the table borders it
+// was invisible against this background.
+//
+// The bar's WIDTH cannot be measured here: headless Chromium draws overlay
+// scrollbars, which take no layout space (offsetWidth - clientWidth is 0 whatever
+// the CSS says). What is checkable is that the rule reaches the element and the
+// browser accepted the colours — a rejected value computes to "auto" — and that the
+// element is genuinely scrollable. The width is left at the browser default on
+// purpose; the old 8px was the bug.
+const bar = await page.evaluate(() => {
+  const el = document.querySelector("table")?.parentElement;
+  if (!el) return null;
+  el.scrollTop = 400;
+  const cs = getComputedStyle(el);
+  return { colour: cs.scrollbarColor, width: cs.scrollbarWidth,
+           below: el.scrollHeight - el.clientHeight, moved: el.scrollTop };
+});
+// #9AA2C0 thumb on a #1B2140 track — T.textDim on T.surface.
+check("the table scroller paints a visible scrollbar",
+  bar && bar.colour, "rgb(154, 162, 192) rgb(27, 33, 64)");
+check("at the browser's normal width, not narrowed", bar && bar.width, "auto");
+check("there are rows below the fold for it to reach", bar && bar.below > 200, true);
+check("and the container actually scrolls", bar && bar.moved === 400, true);
+// The tab strip is the one scroller that stays hidden — a visible bar there costs a
+// row of height on the phone screens that have none to spare.
+check("the tab strip keeps its scrollbar hidden", await page.evaluate(() => {
+  const el = document.querySelector(".meridian-tabs");
+  return el ? getComputedStyle(el).scrollbarWidth : "no strip";
+}), "none");
+await page.evaluate(() => { const el = document.querySelector("table")?.parentElement; if (el) el.scrollTop = 0; });
 
 // --- Golden Breakout --------------------------------------------------------
 await page.getByRole("button", { name: "Golden Breakout" }).first().click();

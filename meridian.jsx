@@ -358,10 +358,19 @@ function FundRow({ label, block, isPercent = true }) {
   );
 }
 
-// ---------- Column filtering (numeric range filters, Excel-style) ----------
-// Stock name and CMP are intentionally excluded — filtering by exact price/name
-// isn't useful; everything else that's a single scalar value gets a range filter.
+// ---------- Column filtering (Excel-style, per column) ----------
+// Two kinds: a min/max range for numbers, and a multi-select checkbox list for
+// categorical text (kind: "text"). Stock name and CMP are intentionally excluded —
+// filtering by exact price or name isn't useful, and the search box covers names.
+//
+// A row whose categorical value is missing is bucketed under UNCLASSIFIED rather than
+// dropped from the options, otherwise those rows are unreachable: they would match no
+// chosen value and there would be no value to choose that finds them.
+const UNCLASSIFIED = "(unclassified)";
+const categoryOf = (v) => (v == null ? "" : String(v)).trim() || UNCLASSIFIED;
+
 const FILTERABLE_COLUMNS = {
+  Sector: { label: "Sector", kind: "text", accessor: (s) => s.Sector },
   changePct: { label: "1D %", accessor: (s) => s.tech?.changePct },
   MarketCap: { label: "Mkt Cap", accessor: (s) => s.MarketCap },
   PE: { label: "P/E", accessor: (s) => s.PE },
@@ -374,6 +383,34 @@ const FILTERABLE_COLUMNS = {
   volBreakout: { label: "Vol Breakout %", accessor: (s) => s.tech?.volBreakoutPct },
   marketCap: { label: "Mkt Cap", accessor: (s) => s.MarketCap },
 };
+
+// One predicate for every screen's colFilters, so the two filter kinds cannot drift
+// apart between the three tables that use them. An unknown key passes rather than
+// excluding everything — a filter left over from a column that is no longer rendered
+// should not silently empty the table.
+function matchesColFilters(defs, colFilters, row) {
+  return Object.entries(colFilters).every(([key, cfg]) => {
+    const def = defs[key];
+    if (!def) return true;
+    const val = def.accessor(row);
+    if (def.kind === "text") {
+      if (!cfg?.values?.length) return true;
+      return cfg.values.includes(categoryOf(val));
+    }
+    if (cfg.min != null && (val == null || val < cfg.min)) return false;
+    if (cfg.max != null && (val == null || val > cfg.max)) return false;
+    return true;
+  });
+}
+
+// The distinct values present in `rows` for a categorical column, sorted, with the
+// unclassified bucket last because it is a residue and not a sector.
+function categoryOptions(rows, accessor) {
+  const seen = new Set();
+  for (const r of rows) seen.add(categoryOf(accessor(r)));
+  const out = Array.from(seen).sort((a, b) => a.localeCompare(b));
+  return out.filter((v) => v !== UNCLASSIFIED).concat(out.includes(UNCLASSIFIED) ? [UNCLASSIFIED] : []);
+}
 
 function NumFilterPopover({ colKey, label, current, onApply, onClear, onClose }) {
   const [min, setMin] = useState(current?.min ?? "");
@@ -393,6 +430,67 @@ function NumFilterPopover({ colKey, label, current, onApply, onClear, onClose })
       </div>
       <div style={{ display: "flex", gap: 6 }}>
         <button onClick={() => { onApply(colKey, { min: min === "" ? null : Number(min), max: max === "" ? null : Number(max) }); onClose(); }}
+          style={{ flex: 1, padding: "5px 8px", borderRadius: 5, border: `1px solid ${T.gold}`, background: "rgba(201,162,39,0.12)", color: T.gold, fontSize: 11, fontWeight: 600 }}>Apply</button>
+        <button onClick={() => { onClear(colKey); onClose(); }}
+          style={{ flex: 1, padding: "5px 8px", borderRadius: 5, border: `1px solid ${T.border}`, background: "transparent", color: T.textDim, fontSize: 11 }}>Clear</button>
+      </div>
+    </div>
+  );
+}
+
+// The categorical counterpart to NumFilterPopover: a checkbox list of the values
+// actually present in the loaded universe. Multi-select, because "IT and Financials"
+// is a question the single-select dropdown this replaces could never answer. The
+// choices are staged locally and only committed on Apply, so a half-built selection
+// never re-renders 2,000 rows behind the popover.
+function TextFilterPopover({ colKey, label, options, current, onApply, onClear, onClose }) {
+  const [chosen, setChosen] = useState(() => new Set(current?.values ?? []));
+  const [q, setQ] = useState("");
+  const needle = q.trim().toLowerCase();
+  const shown = needle ? options.filter((o) => o.toLowerCase().includes(needle)) : options;
+  const toggle = (o) => setChosen((prev) => {
+    const next = new Set(prev);
+    if (next.has(o)) next.delete(o); else next.add(o);
+    return next;
+  });
+  // Apply with nothing ticked means "no filter", not "show nothing" — an empty table
+  // with an active filter chip is a dead end the reader has to guess their way out of.
+  const apply = () => {
+    if (chosen.size === 0) onClear(colKey); else onApply(colKey, { values: Array.from(chosen) });
+    onClose();
+  };
+  return (
+    <div onClick={(e) => e.stopPropagation()} style={{
+      position: "absolute", top: "120%", left: 0, zIndex: 30, background: T.surfaceAlt,
+      border: `1px solid ${T.border}`, borderRadius: 8, padding: 10, width: 230,
+      boxShadow: "0 4px 16px rgba(0,0,0,0.5)", textTransform: "none", letterSpacing: "normal", fontWeight: 400,
+    }}>
+      <div style={{ fontSize: 11, color: T.textDim, marginBottom: 6 }}>
+        Filter {label}{chosen.size > 0 ? ` · ${chosen.size} selected` : ""}
+      </div>
+      {options.length > 8 && (
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Search ${label.toLowerCase()}...`}
+          style={{ width: "100%", padding: "5px 7px", marginBottom: 6, borderRadius: 5, border: `1px solid ${T.border}`, background: T.surface, color: T.text, fontSize: 12 }} />
+      )}
+      <div style={{ maxHeight: 220, overflowY: "auto", marginBottom: 8 }}>
+        {shown.length === 0 && <div style={{ fontSize: 11.5, color: T.textDim, padding: "6px 2px" }}>No match</div>}
+        {shown.map((o) => (
+          <label key={o} style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 2px", fontSize: 12, color: T.text, cursor: "pointer" }}>
+            <input type="checkbox" checked={chosen.has(o)} onChange={() => toggle(o)} style={{ accentColor: T.gold, cursor: "pointer" }} />
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o}</span>
+          </label>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+        <button onClick={() => setChosen(new Set(shown))}
+          style={{ flex: 1, padding: "4px 6px", borderRadius: 5, border: `1px solid ${T.border}`, background: "transparent", color: T.textDim, fontSize: 11 }}>
+          {needle ? "Select shown" : "Select all"}
+        </button>
+        <button onClick={() => setChosen(new Set())}
+          style={{ flex: 1, padding: "4px 6px", borderRadius: 5, border: `1px solid ${T.border}`, background: "transparent", color: T.textDim, fontSize: 11 }}>None</button>
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        <button onClick={apply}
           style={{ flex: 1, padding: "5px 8px", borderRadius: 5, border: `1px solid ${T.gold}`, background: "rgba(201,162,39,0.12)", color: T.gold, fontSize: 11, fontWeight: 600 }}>Apply</button>
         <button onClick={() => { onClear(colKey); onClose(); }}
           style={{ flex: 1, padding: "5px 8px", borderRadius: 5, border: `1px solid ${T.border}`, background: "transparent", color: T.textDim, fontSize: 11 }}>Clear</button>
@@ -624,14 +722,7 @@ function GenericAssetScreen({ config, onAsOf, dataset = null }) {
   const filtered = useMemo(() => {
     let list = computed.filter((s) =>
       (search === "" || (s.Name || "").toLowerCase().includes(search.toLowerCase()) || (s.Symbol || "").toLowerCase().includes(search.toLowerCase())) &&
-      Object.entries(colFilters).every(([key, cfg]) => {
-        const def = FILTERABLE[key];
-        if (!def) return true;
-        const val = def.accessor(s);
-        if (cfg.min != null && (val == null || val < cfg.min)) return false;
-        if (cfg.max != null && (val == null || val > cfg.max)) return false;
-        return true;
-      }) &&
+      matchesColFilters(FILTERABLE, colFilters, s) &&
       matchesMASignals(s.tech?.sSignals, s.tech?.sStreaks, maFilters.S, [3, 8, 30, 50, 100, 200]) &&
       matchesMASignals(s.tech?.mSignals, s.tech?.mStreaks, maFilters.M, [3, 8, 30, 100])
     );
@@ -1084,14 +1175,7 @@ function GoldenBreakoutScreen({ candidates, accent = T.gold, hasFundamentals = t
   const filtered = useMemo(() => {
     let list = candidates.filter((s) =>
       (search === "" || (s.Name || "").toLowerCase().includes(search.toLowerCase()) || (s.Symbol || "").toLowerCase().includes(search.toLowerCase())) &&
-      Object.entries(colFilters).every(([key, cfg]) => {
-        const def = GB_FILTERABLE[key];
-        if (!def) return true;
-        const val = def.accessor(s);
-        if (cfg.min != null && (val == null || val < cfg.min)) return false;
-        if (cfg.max != null && (val == null || val > cfg.max)) return false;
-        return true;
-      })
+      matchesColFilters(GB_FILTERABLE, colFilters, s)
     );
     list = [...list].sort((a, b) => {
       const get = (row) => {
@@ -1424,7 +1508,6 @@ export default function App({ dataset = null }) {
   const [prices, setPrices] = useState([]);
   const [usingSample, setUsingSample] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const [sectorFilter, setSectorFilter] = useState("All");
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState("Name");
   const [sortDir, setSortDir] = useState(1);
@@ -1745,23 +1828,17 @@ export default function App({ dataset = null }) {
     [dataset, sectoralComputed, equitiesSubTab]
   );
 
-  const sectors = useMemo(
-    () => ["All", ...Array.from(new Set((dataset ? dataset.computed : master).map((m) => m.Sector).filter(Boolean)))],
+  // Options for the Sector column filter, taken from the universe as loaded rather
+  // than a fixed list, so a sector that only appears after a data refresh shows up.
+  const sectorOptions = useMemo(
+    () => categoryOptions(dataset ? dataset.computed : master, FILTERABLE_COLUMNS.Sector.accessor),
     [dataset, master]);
 
   const filtered = useMemo(() => {
     let list = computed.filter((s) =>
-      (sectorFilter === "All" || s.Sector === sectorFilter) &&
       (search === "" || (s.Name || "").toLowerCase().includes(search.toLowerCase()) || (s.Symbol || "").toLowerCase().includes(search.toLowerCase())) &&
       (activeView === "All" || (watchlists[activeView] || []).includes(s.ISIN)) &&
-      Object.entries(colFilters).every(([key, cfg]) => {
-        const def = FILTERABLE_COLUMNS[key];
-        if (!def) return true;
-        const val = def.accessor(s);
-        if (cfg.min != null && (val == null || val < cfg.min)) return false;
-        if (cfg.max != null && (val == null || val > cfg.max)) return false;
-        return true;
-      }) &&
+      matchesColFilters(FILTERABLE_COLUMNS, colFilters, s) &&
       matchesMASignals(s.tech?.sSignals, s.tech?.sStreaks, maFilters.S, [3, 8, 30, 50, 100, 200]) &&
       matchesMASignals(s.tech?.mSignals, s.tech?.mStreaks, maFilters.M, [3, 8, 30, 100])
     );
@@ -1787,7 +1864,7 @@ export default function App({ dataset = null }) {
       return sortDir * ((av ?? -Infinity) - (bv ?? -Infinity));
     });
     return list;
-  }, [computed, sectorFilter, search, sortKey, sortDir, activeView, watchlists, colFilters, maFilters]);
+  }, [computed, search, sortKey, sortDir, activeView, watchlists, colFilters, maFilters]);
 
   const toggleSort = (key) => {
     if (sortKey === key) setSortDir((d) => -d); else { setSortKey(key); setSortDir(1); }
@@ -1812,12 +1889,18 @@ export default function App({ dataset = null }) {
     <th style={{ position: "relative" }}>
       <span onClick={() => toggleSort(colKey)} style={{ cursor: "pointer" }}>{label}{sortArrow(colKey)}</span>
       <button onClick={(e) => { e.stopPropagation(); setOpenFilterKey(openFilterKey === colKey ? null : colKey); }}
+        title={`Filter by ${label}`}
         style={{ marginLeft: 4, padding: 2, border: "none", background: "transparent", cursor: "pointer", verticalAlign: "middle" }}>
         <Filter size={10} color={colFilters[colKey] ? T.gold : T.textDim} />
       </button>
       {openFilterKey === colKey && (
-        <NumFilterPopover colKey={colKey} label={label} current={colFilters[colKey]}
-          onApply={applyFilter} onClear={clearFilter} onClose={() => setOpenFilterKey(null)} />
+        FILTERABLE_COLUMNS[colKey]?.kind === "text" ? (
+          <TextFilterPopover colKey={colKey} label={label} options={sectorOptions} current={colFilters[colKey]}
+            onApply={applyFilter} onClear={clearFilter} onClose={() => setOpenFilterKey(null)} />
+        ) : (
+          <NumFilterPopover colKey={colKey} label={label} current={colFilters[colKey]}
+            onApply={applyFilter} onClear={clearFilter} onClose={() => setOpenFilterKey(null)} />
+        )
       )}
     </th>
   );
@@ -1838,8 +1921,29 @@ export default function App({ dataset = null }) {
         * { box-sizing: border-box; }
         table { border-collapse: collapse; width: 100%; }
         th, td { text-align: left; padding: 8px 10px; }
-        ::-webkit-scrollbar { height: 8px; width: 8px; }
-        ::-webkit-scrollbar-thumb { background: ${T.border}; border-radius: 4px; }
+        /* Each table lives in its own 70vh scroller, so its scrollbar is the only
+           thing that says there are more rows below the fold — and the only handle
+           for dragging down to them. At 8px, with a thumb the same colour as the
+           table borders, it read as no scrollbar at all against this background.
+           Full width and clearly coloured instead.
+
+           Two mechanisms, and they do not fight: a browser that understands
+           scrollbar-color ignores the ::-webkit- pseudo-elements entirely, and one
+           that does not ignores scrollbar-color and takes the pseudo-elements. The
+           tab strip stays hidden under both — its inline scrollbarWidth: "none"
+           beats this rule, and .meridian-tabs::-webkit-scrollbar is more specific
+           than the bare pseudo-element. scrollbar-width is deliberately left alone:
+           setting it to "thin" would make the bar narrower than the default, which
+           is the opposite of what is wanted here. */
+        * { scrollbar-color: ${T.textDim} ${T.surface}; }
+        ::-webkit-scrollbar { height: 12px; width: 12px; }
+        ::-webkit-scrollbar-track { background: ${T.surface}; border-radius: 6px; }
+        ::-webkit-scrollbar-thumb {
+          background: ${T.textDim}; border-radius: 6px;
+          border: 2px solid ${T.surface}; background-clip: padding-box;
+        }
+        ::-webkit-scrollbar-thumb:hover { background: ${T.text}; background-clip: padding-box; }
+        ::-webkit-scrollbar-corner { background: ${T.surface}; }
         input, select { font-family: inherit; }
         button { font-family: inherit; cursor: pointer; }
       `}</style>
@@ -2093,10 +2197,6 @@ export default function App({ dataset = null }) {
               <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search stock..."
                 style={{ padding: "6px 10px 6px 26px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.surface, color: T.text, fontSize: 12, width: 160 }} />
             </div>
-            <select value={sectorFilter} onChange={(e) => setSectorFilter(e.target.value)}
-              style={{ padding: "6px 10px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.surface, color: T.text, fontSize: 12 }}>
-              {sectors.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
             {(Object.keys(colFilters).length > 0 || maFilters.S || maFilters.M) && (
               <button onClick={clearAllFilters} style={{ padding: "6px 10px", borderRadius: 6, border: `1px solid ${T.border}`, background: "transparent", color: T.textDim, fontSize: 11.5, display: "inline-flex", alignItems: "center", gap: 5 }}>
                 <Filter size={11} color={T.gold} /> {Object.keys(colFilters).length + (maFilters.S?1:0) + (maFilters.M?1:0)} filter{(Object.keys(colFilters).length + (maFilters.S?1:0) + (maFilters.M?1:0)) > 1 ? "s" : ""} active <X size={11} />
@@ -2141,7 +2241,7 @@ export default function App({ dataset = null }) {
                   <th></th>
                   <th></th>
                   <th onClick={() => toggleSort("Name")} style={{ cursor: "pointer" }}>Stock{sortArrow("Name")}</th>
-                  <th onClick={() => toggleSort("Sector")} style={{ cursor: "pointer" }}>Sector{sortArrow("Sector")}</th>
+                  <FilterableTh colKey="Sector" label="Sector" />
                   <th onClick={() => toggleSort("CMP")} style={{ cursor: "pointer" }}>CMP{sortArrow("CMP")}</th>
                   <FilterableTh colKey="changePct" label="1D %" />
                   <FilterableTh colKey="MarketCap" label="Mkt Cap" />
