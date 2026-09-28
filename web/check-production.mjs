@@ -183,6 +183,27 @@ check("equity screen still shows only equities (2138, not 2240)",
 // thirty seconds for an "Equities" button that is not on screen. The same ordering trap
 // cost the invite check a false pass yesterday -- state left behind by an earlier check
 // is the sharpest edge in this file.
+// --- the workbook download ----------------------------------------------------
+// Added 2026-09-28, because the owner went looking for it and it was not there.
+// publish_workbook.mjs had been uploading meridian.xlsx to Supabase Storage after
+// every nightly run, the bucket had an authenticated-read policy written for exactly
+// this, and no part of the app ever linked to it. Built, published, verified,
+// unreachable -- the same shape as the password recovery that shipped without a way
+// back in.
+//
+// Driven by actually clicking it and catching the download, not by asserting the
+// button exists. A button that renders and fails on click is the defect this is for.
+check("the workbook download is on screen",
+      await page.locator("text=workbook .xlsx").isVisible(), true);
+const dl = page.waitForEvent("download", { timeout: 8000 }).catch(() => null);
+await page.locator("text=workbook .xlsx").click();
+const file = await dl;
+check("clicking it actually downloads a file", Boolean(file), true);
+// Saved under its as-of date, not as "latest": a folder of files all called latest
+// is not a record of anything.
+check("the file is named for the data's as-of date",
+      /^meridian-\d{4}-\d{2}-\d{2}\.xlsx$/.test(file?.suggestedFilename() ?? ""), true);
+
 // --- market cap on the equities breakout screen -------------------------------
 // Added 2026-09-17 on request. The assertion that matters is not that the column
 // exists but that it exists on ONE screen: GoldenBreakoutScreen is shared by all five

@@ -46,7 +46,65 @@ const headerButton = {
 // So an invited user arrives with a password somebody else generated and, until now,
 // no way to replace it. updateUser on a live session is a plain authenticated call —
 // no link, no inbox, no round trip.
-function AccountControls() {
+// THE WORKBOOK HAD NOWHERE TO BE DOWNLOADED FROM.
+//
+// publish_workbook.mjs has uploaded meridian.xlsx to Supabase Storage after every
+// nightly run since the pipeline existed, the bucket has an authenticated-read policy
+// written for exactly this, §2.2 calls the workbook a board-shareable deliverable --
+// and nothing in the app ever linked to it. It was built, published, verified, and
+// unreachable, which is the same shape as the password recovery that shipped without
+// a way back in: the half that runs on a server was finished and the half a person
+// touches was never started.
+//
+// The bucket is private, so this downloads through the authenticated client rather
+// than exposing a URL. The file is saved under its as-of date instead of the
+// "latest.xlsx" it is stored as, because a folder of files all called latest is not a
+// record of anything.
+function WorkbookDownload({ asOf }) {
+  const [state, setState] = useState({ status: "idle" });
+
+  async function download() {
+    setState({ status: "working" });
+    try {
+      const { data, error } = await supabase.storage.from("workbooks").download("daily/latest.xlsx");
+      if (error) throw new Error(error.message);
+      const url = URL.createObjectURL(data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `meridian-${asOf ?? "latest"}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Revoked on a tick, not immediately: Safari has been known to cancel the
+      // download if the object URL disappears in the same frame as the click.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setState({ status: "done" });
+      setTimeout(() => setState({ status: "idle" }), 2500);
+    } catch (e) {
+      setState({ status: "error", message: e.message });
+    }
+  }
+
+  return (
+    <>
+      <button style={{ ...headerButton, marginRight: 8 }} onClick={download}
+        disabled={state.status === "working"}>
+        {state.status === "working" ? "preparing…"
+          : state.status === "done" ? "downloaded ✓"
+          : "workbook .xlsx"}
+      </button>
+      {state.status === "error" && (
+        <div style={{
+          marginTop: 8, padding: "8px 10px", maxWidth: 260, textAlign: "left",
+          background: "#161A21", border: `1px solid ${C.loss}`, borderRadius: 6,
+          fontSize: 11.5, color: C.loss,
+        }}>Could not fetch the workbook: {state.message}</div>
+      )}
+    </>
+  );
+}
+
+function AccountControls({ asOf = null }) {
   const [open, setOpen] = useState(false);
   const [password, setPassword] = useState("");
   const [state, setState] = useState({ status: "idle" });
@@ -65,6 +123,7 @@ function AccountControls() {
 
   return (
     <div style={{ position: "fixed", top: 18, right: 18, zIndex: 50, textAlign: "right" }}>
+      <WorkbookDownload asOf={asOf} />
       <button style={{ ...headerButton, marginRight: 8 }} onClick={() => setOpen((v) => !v)}>
         change password
       </button>
@@ -222,7 +281,7 @@ function Root() {
   }
   if (!data) return <Centered>Loading the latest screen…<SignOut /></Centered>;
 
-  return <><SignOut /><App dataset={data} /></>;
+  return <><SignOut asOf={data?.asOf?.iso} /><App dataset={data} /></>;
 }
 
 // Last line of defence. Anything that throws before or during the first render —

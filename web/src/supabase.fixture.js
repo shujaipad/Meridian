@@ -47,6 +47,27 @@ export const supabase = {
     },
     __fireRecovery: () => notify("PASSWORD_RECOVERY", session),
   },
+  // The workbook lives in Supabase Storage, and the app downloads it through the
+  // authenticated client because the bucket is private. Stubbed here so `npm run
+  // check` can drive the button for real -- a download control that is only ever
+  // tested by looking at it is how the workbook came to be published for a week with
+  // nothing in the app linking to it.
+  storage: {
+    from(bucket) {
+      return {
+        async download(key) {
+          if (bucket !== "workbooks") return { data: null, error: { message: `no bucket ${bucket}` } };
+          if (key !== "daily/latest.xlsx") return { data: null, error: { message: `not found: ${key}` } };
+          // A real xlsx is a zip; the first two bytes are all this needs to be
+          // recognisably one, and the check asserts on the filename rather than the
+          // contents.
+          return { data: new Blob([new Uint8Array([0x50, 0x4b])],
+                                  { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+                   error: null };
+        },
+      };
+    },
+  },
   from(table) {
     const rows = fixture[table] || [];
     return {
