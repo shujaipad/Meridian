@@ -42,8 +42,9 @@ export async function collectHealth(db, { tables = [] } = {}) {
       .select("job_type,status,message,finished_at")
       .order("finished_at", { ascending: false }).limit(5);
     if (error) throw new Error(error.message);
-    const { parseEgress } = await import("./meridian-io.js");
-    facts.jobs = (data ?? []).map((j) => ({ ...j, egress: parseEgress(j.message) }));
+    const { parseEgress, parseTolerated } = await import("./meridian-io.js");
+    facts.jobs = (data ?? []).map((j) => ({
+      ...j, egress: parseEgress(j.message), tolerated: parseTolerated(j.message) }));
   } catch (e) { facts.errors.push(`fetch_job_log: ${e.message}`); }
 
   // Byte sizes need the optional helper (supabase-migration-005-capacity.sql). Their
@@ -139,8 +140,14 @@ export function evaluateHealth(facts, {
 
   const last = (facts.jobs ?? [])[0];
   if (last && last.status !== "success") {
-    add("error", "job-failed",
-        `The most recent ${last.job_type} run did not succeed: ${last.message ?? "no message"}`);
+    // A run that missed some instruments but stayed under the tolerance and published
+    // anyway is not a reason to wake anyone: its watermarks did not move, so the next
+    // sweep retries exactly those instruments. It is still reported, every night, as a
+    // warning. Only a run that REFUSED to publish is an error.
+    const tolerated = Boolean(last.tolerated);
+    add(tolerated ? "warning" : "error", "job-failed",
+        `The most recent ${last.job_type} run ${tolerated ? "published with instruments missing" : "did not succeed"}: `
+        + `${last.message ?? "no message"}`);
   }
 
   const usedMb = usedMbOf(facts.sizes);

@@ -18,13 +18,13 @@ import { egressPerMonthMb, EGRESS_LIMIT_MB, evaluateHealth, mbPerYear, RUNS_PER_
          usedMbOf, worstLevel } from "./meridian-health.js";
 import { mergeRows, newestByClass, nextAppendName } from "./meridian-history.js";
 import { SNAPSHOT_TABLES } from "./meridian-schema.js";
-import { arrearsInstrumentDays, deepRepullCap, medianNewestStored, restatementOf,
-         SETTLEMENT_DAYS, tradingArrearsSince, unabsorbedEventDate,
+import { arrearsInstrumentDays, barsOf, deepRepullCap, medianNewestStored,
+         restatementOf, SETTLEMENT_DAYS, tradingArrearsSince, unabsorbedEventDate,
          unsettledFrom } from "./meridian-detect.js";
 import { DEFAULT_DB_WINDOW_DAYS, DEFAULT_RETENTION_DAYS, egressSuffix, meterLine,
-         meteredFetch, newMeter, PAGE, parseEgress, r4, readAll, readAllChunked,
-         readEgress, readEquityPrices, readPriceCache, recordEgress, rPrice,
-         writePriceCache } from "./meridian-io.js";
+         meteredFetch, newMeter, PAGE, parseEgress, parseTolerated, r4, readAll,
+         readAllChunked, readEgress, readEquityPrices, readPriceCache, recordEgress,
+         rPrice, toleratedSuffix, writePriceCache } from "./meridian-io.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 
@@ -247,6 +247,97 @@ await check("the retention window clears the model's read window", () => {
   const margin = DEFAULT_RETENTION_DAYS - DEFAULT_DB_WINDOW_DAYS;
   return margin >= 250 ? null
     : `retention ${DEFAULT_RETENTION_DAYS} leaves only ${margin} days over the ${DEFAULT_DB_WINDOW_DAYS}-day read window`;
+});
+
+// ---------------------------------------------------------------- one bar per date
+console.log("\nbars, one per exchange-local date");
+
+// A Yahoo chart payload, minimally. `tz` drives the exchange-local date, which is the
+// whole point: the same instant is a different date in London and Kolkata.
+const payload = (tz, bars) => ({
+  meta: { exchangeTimezoneName: tz },
+  timestamp: bars.map((b) => b.t),
+  indicators: {
+    quote: [{
+      close: bars.map((b) => b.c),
+      high: bars.map((b) => b.h ?? b.c),
+      low: bars.map((b) => b.l ?? b.c),
+      volume: bars.map((b) => b.v ?? 0),
+    }],
+  },
+});
+const utc = (iso) => Math.floor(Date.parse(iso) / 1000);
+
+await check("one bar per day comes back one row per day", () => {
+  const rows = barsOf(payload("Europe/London", [
+    { t: utc("2026-10-01T23:00:00Z"), c: 1.1 },   // London midnight on the 2nd
+    { t: utc("2026-10-04T23:00:00Z"), c: 1.2 },   // London midnight on the 5th
+  ]), rPrice);
+  return eq(rows.map((r) => r.date), ["2026-10-02", "2026-10-05"], "dates");
+});
+
+// THE DEFECT THAT KILLED FOUR NIGHTS (§11l). Yahoo appends a live, partial bar for the
+// session in progress stamped with the CURRENT time, beside the settled bar for the
+// same local date stamped at local midnight. Both are the same date. Two rows with one
+// key in one upsert is a hard Postgres error -- "ON CONFLICT DO UPDATE command cannot
+// affect row a second time" -- and the fetch step died on the first instrument to hit
+// it, every night the run happened to start late enough for both bars to exist.
+await check("a live bar and a settled bar on the same date collapse to one row", () => {
+  const rows = barsOf(payload("Europe/London", [
+    { t: utc("2026-10-01T23:00:00Z"), c: 1.1 },   // settled, London 2026-10-02 00:00
+    { t: utc("2026-10-04T23:00:00Z"), c: 1.2 },   // settled, London 2026-10-05 00:00
+    { t: utc("2026-10-05T21:57:00Z"), c: 1.25 },  // live,    London 2026-10-05 22:57
+  ]), rPrice);
+  if (rows.length !== 2) return `${rows.length} rows for 2 dates — the upsert would be refused`;
+  const dates = rows.map((r) => r.date);
+  if (new Set(dates).size !== dates.length) return `duplicate dates survived: ${dates}`;
+  return eq(dates, ["2026-10-02", "2026-10-05"], "dates");
+});
+
+// Which of the two to keep is not arbitrary. The later timestamp is the more recent
+// observation of that date, and the settlement window already holds that a bar inside
+// it is provisional and gets rewritten rather than judged.
+await check("the later observation of a date wins", () => {
+  const rows = barsOf(payload("Europe/London", [
+    { t: utc("2026-10-04T23:00:00Z"), c: 1.20, h: 1.21, l: 1.19, v: 10 },
+    { t: utc("2026-10-05T21:57:00Z"), c: 1.25, h: 1.26, l: 1.18, v: 99 },
+  ]), rPrice);
+  const r = rows[0];
+  return r.close === 1.25 && r.high === 1.26 && r.low === 1.18 && r.volume === 99
+    ? null : `kept the earlier bar: ${JSON.stringify(r)}`;
+});
+
+// De-duplicating must not reorder. Downstream compares bars against stored history in
+// sequence, and the git mirror writes them in the order it gets them.
+await check("de-duplicating keeps the rows in chronological order", () => {
+  const rows = barsOf(payload("UTC", [
+    { t: utc("2026-10-01T00:00:00Z"), c: 1 },
+    { t: utc("2026-10-02T00:00:00Z"), c: 2 },
+    { t: utc("2026-10-02T23:00:00Z"), c: 3 },   // same UTC date as the one before
+    { t: utc("2026-10-03T00:00:00Z"), c: 4 },
+  ]), rPrice);
+  return eq(rows.map((r) => r.date), ["2026-10-01", "2026-10-02", "2026-10-03"], "dates")
+      || eq(rows.map((r) => r.close), [1, 3, 4], "closes");
+});
+
+// The pre-existing rules this function also has to keep: a null or non-positive close
+// is a gap and never becomes a fabricated bar, and the adjusted close rescales the
+// whole bar rather than only the close (§3.2a).
+await check("a gap stays a gap", () => {
+  const rows = barsOf(payload("UTC", [
+    { t: utc("2026-10-01T00:00:00Z"), c: 1 },
+    { t: utc("2026-10-02T00:00:00Z"), c: null },
+    { t: utc("2026-10-03T00:00:00Z"), c: 0 },
+  ]), rPrice);
+  return eq(rows.map((r) => r.date), ["2026-10-01"], "dates");
+});
+
+await check("a bar's date is its exchange's local date, not UTC", () => {
+  const instant = utc("2026-10-05T19:30:00Z");   // 2026-10-06 01:00 in Kolkata
+  const london = barsOf(payload("Europe/London", [{ t: instant, c: 1 }]), rPrice);
+  const kolkata = barsOf(payload("Asia/Kolkata", [{ t: instant, c: 1 }]), rPrice);
+  return london[0].date === "2026-10-05" && kolkata[0].date === "2026-10-06" ? null
+    : `london=${london[0].date} kolkata=${kolkata[0].date}`;
 });
 
 // ---------------------------------------------------------------- detector 1
@@ -579,6 +670,23 @@ await check("a 404 is not retried", () => {
   return guard > 0 && guard < backoff ? null : "the noRetry check is after the backoff";
 });
 
+// An empty Golden Breakout screen is a market outcome, not a fault: on 2026-10-02
+// nothing cleared gate 5 and the workbook verifier -- which assumed at least one
+// candidate and read the header row -- failed a correct workbook, taking the night's
+// publish with it. Asserted against the source because the verifier needs a built
+// workbook and a LibreOffice recalculation to run.
+await check("the workbook verifier survives an empty breakout screen", () => {
+  const src = readFileSync(new URL("./verify_workbook.py", import.meta.url), "utf8");
+  const guard = src.indexOf("if breakout:");
+  const rank = src.indexOf('"Golden Breakout", "A2", 1');
+  if (guard < 0) return "the Golden Breakout rank checks are not guarded on a non-empty screen";
+  if (rank < 0) return "the first-rank check is gone";
+  if (guard > rank) return "the guard sits after the check it is meant to guard";
+  // Guarded is not the same as skipped: the empty case must still assert emptiness.
+  return /Golden Breakout is empty/.test(src) ? null
+    : "an empty screen is skipped rather than checked";
+});
+
 // ---------------------------------------------------------------- health
 console.log("\nhealth checks");
 
@@ -631,13 +739,61 @@ await check("a failed job log entry is an error", () => {
   return j && j.level === "error" ? null : "a failed run was not reported";
 });
 
-// Tolerating is not forgiving: the job log still says failure, evaluateHealth still
-// errors on it, and db_report still turns that into a red run -- after publishing.
-await check("a tolerated failure still reports as a failed job", () => {
-  const f = evalWith({ jobs: [{ job_type: "daily", status: "failure",
-                                message: "swept 2238, +5770 bars, 53 re-pulled, 252 failed" }] });
+// Tolerating is still not forgiving -- the job log says failure and the finding is
+// raised every night -- but it is a WARNING, not an error, and so does not fail the run.
+//
+// This check used to assert the opposite, deliberately, and production showed why that
+// was wrong: on 2026-09-29 one instrument of 2,238 failed, the night completed in full
+// (4,509 bars, screens published, workbook published, mirror committed), and the run
+// was reported as a failure anyway. A pipeline that is red whether or not it worked is
+// not a signal, and this one hid four genuinely broken nights behind it (§11l). The
+// `tolerated` fact comes off the job-log row, which is the only thing that can tell a
+// night that published from a night that refused.
+await check("a tolerated failure is reported, but does not fail the run", () => {
+  const f = evalWith({ jobs: [{ job_type: "daily", status: "failure", tolerated: true,
+                                message: "swept 2238, +5770 bars, 53 re-pulled, 252 failed "
+                                       + "| published=tolerated" }] });
   const j = f.find((x) => x.code === "job-failed");
-  return j && j.level === "error" ? null : "a tolerated partial failure went unreported";
+  if (!j) return "a tolerated partial failure went unreported";
+  if (j.level !== "warning") return `tolerated failure reported at level ${j.level}, not warning`;
+  return /published with instruments missing/.test(j.message) ? null
+    : `the finding does not say it published: ${j.message}`;
+});
+
+// The other half of the same distinction. Without this, relaxing the rule above would
+// quietly relax it for a night that refused to publish too.
+await check("a run that refused to publish is still an error", () => {
+  const f = evalWith({ jobs: [{ job_type: "daily", status: "failure", tolerated: false,
+                                message: "swept 2238, +0 bars, 0 re-pulled, 450 failed" }] });
+  const j = f.find((x) => x.code === "job-failed");
+  return j && j.level === "error" ? null
+    : `a refused night reported at level ${j?.level ?? "nothing"}`;
+});
+
+await check("the tolerated tag round-trips through the job log message", () => {
+  const msg = `swept 2238, +5770 bars, 53 re-pulled, 1 failed ${toleratedSuffix()}`;
+  if (!parseTolerated(msg)) return "the tag we write is not the tag we read";
+  if (parseTolerated("swept 2238, +5770 bars, 53 re-pulled, 1 failed"))
+    return "an untagged message parsed as tolerated";
+  // and it must not collide with the egress tag, which rides in the same field
+  const both = `pipeline fetch+compute ${egressSuffix(newMeter())} ${toleratedSuffix()}`;
+  return parseTolerated(both) && parseEgress(both) ? null : "the two tags interfere";
+});
+
+// A night under tolerance writes the tag; a night over it exits before publishing and
+// must not. Asserted against the source because the decision and the insert are in
+// daily_fetch.mjs, which cannot run without a database.
+await check("daily_fetch tags only the nights that published", () => {
+  const src = readFileSync(new URL("./daily_fetch.mjs", import.meta.url), "utf8");
+  if (!/published \? ` \$\{toleratedSuffix\(\)\}` : ""/.test(src))
+    return "the job-log message does not carry the tolerated tag";
+  if (!/const published = failures\.length > 0 && failedShare <= FAILURE_TOLERANCE/.test(src))
+    return "`published` is not the under-tolerance condition";
+  // The tolerance must be decided BEFORE the row is written, or the tag cannot be on it.
+  const decided = src.indexOf("const published =");
+  const inserted = src.indexOf('from("fetch_job_log").insert');
+  return decided > 0 && decided < inserted ? null
+    : "the tolerance is decided after the job-log row is written";
 });
 
 await check("capacity past the threshold is an error", () => {

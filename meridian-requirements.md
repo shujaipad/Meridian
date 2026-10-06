@@ -43,13 +43,13 @@ what each defect had in common. As of the first green end-to-end run:
 
 | | |
 |---|---|
-| Nightly pipeline | Green and unattended; steady state ~3 flagged instruments a night |
+| Nightly pipeline | Six consecutive red nights 2026-09-28 to 2026-10-05, three defects, all fixed 2026-10-06 (§11l) |
 | Screens | All five asset classes, published same-day |
 | Workbook | Same day, same rows, same window as the screens (§11d) |
 | Database | ~208 MB of Supabase's 500 MB — ~42%, growing ~114 MB/year (2026-09-28) |
 | Retention | 1,100 days, pruned nightly, so the table is flat rather than growing |
-| Alerting | Failure hook + independent watchdog (§11e) |
-| Checks | 89 pipeline self-checks, 65 browser checks, all negative-tested |
+| Alerting | Built, verified, and **reaching nobody** — the two secrets have never been set, which is why §11l took a week to notice |
+| Checks | 99 pipeline self-checks, 65 browser checks, all negative-tested |
 
 The prototype this section used to describe — a single client-side artifact with
 user-uploaded CSVs and no automation — is still in the repository as `meridian.jsx`,
@@ -3142,6 +3142,133 @@ same offline as on.
 
 Browser checks: 50 → 65. Negative-tested: making the categorical branch always match
 fails four of the sector checks; removing `scrollbar-color` fails the colour check.
+
+---
+
+## 11l. Six red nights, three defects, and the alert nobody set up
+*(2026-10-06)*
+
+The nightly pipeline failed on **every one of its six runs** between 2026-09-28 and
+2026-10-05. It was found by a person going and looking, a week later — which is the
+same sentence §11e was written to make impossible, and the reason it did not work is
+that `RESEND_API_KEY` and `ALERT_EMAIL` have still never been set. Every failing run
+printed the alert it could not send, to a log nobody reads.
+
+**What the week actually cost, measured rather than assumed.** Less than it sounds,
+because the design's failure containment held: screens published **2026-10-02** carrying
+data as of **2026-10-01**, so the app was one trading day behind (2026-10-02 was Gandhi
+Jayanti; the only session genuinely missed was Monday 2026-10-05). The workbook was two
+sessions behind, at 2026-09-29, and the git mirror likewise. No watermark advanced on
+any failure, and the 2026-10-05 run had already upserted ~2,079 instruments' Monday bars
+before it died, so the next successful sweep picks up the remaining ~138 untouched. The
+header read `prices as on 01-10-2026` throughout: stale, and saying so.
+
+Three independent defects, which is why six nights produced three different errors.
+
+### 1. Two bars for one date, and Postgres refusing the upsert
+
+Four of the six nights died in the fetch step, on the first currency pair reached:
+
+```
+Error: upsert EUR: ON CONFLICT DO UPDATE command cannot affect row a second time
+```
+
+Yahoo appends a **live, partial bar** for the session in progress, stamped with the
+*current time*, beside the settled bar for the same exchange-local date stamped at local
+midnight. For `EURUSD=X` the exchange timezone is Europe/London, so a run starting at
+21:57 UTC sees one bar at `2026-10-04T23:00Z` (London 2026-10-05 00:00) and another at
+`2026-10-05T21:57Z` (London 2026-10-05 22:57). **Both format to 2026-10-05.** A single
+`INSERT ... ON CONFLICT DO UPDATE` may not touch the same row twice, so Postgres
+rejected the whole batch and the step exited non-zero.
+
+`barsOf` had assumed at most one bar per local date. It now keys on the date and takes
+the **later timestamp**, which is the more recent observation of that day — the same
+last-wins rule the git mirror merges on (§11h), and consistent with the settlement
+window, which already holds that a bar inside it is provisional and gets rewritten
+rather than judged (§11c). A `Map` rather than a de-duplicating pass, because re-setting
+a key replaces the value and keeps the original position, so the rows stay in Yahoo's
+chronological order.
+
+It moved to `meridian-detect.js` to get tested. It is the *shape of the payload*, not the
+mechanics of fetching it, and there was no way to assert anything about it while it sat
+inside a script that cannot start without a database.
+
+**Why it had never happened before, and the uncomfortable part.** Scheduled runs are
+firing **five to seven hours late** — the cron is `30 14 * * 1-5` and the six runs
+started between 18:32 and 21:57 UTC. GitHub delays scheduled workflows on shared
+runners, and nothing in this repository can fix that. Every run that started near 14:40
+UTC predated the collision window; every run that started after ~19:00 UTC hit it. The
+defect was always there and the queue delay is what found it. The fix does not depend on
+the schedule, which is the point.
+
+### 2. One instrument of 2,238 turning a complete night red
+
+The 2026-09-29 run did everything: 4,509 bars, screens published, workbook published and
+uploaded, 3,363 rows mirrored and committed, retention pruned. Then `db_report` exited 1:
+
+```
+[error] job-failed: The most recent daily run did not succeed: swept 2238, +4509 bars, 2 re-pulled, 1 failed
+```
+
+**One instrument.** 0.04% of the universe, inside a 15% tolerance that exists precisely
+so a dud instrument does not cost the other 2,237 their day (§11c). The tolerance let
+the data through and the health check failed the run anyway.
+
+This was deliberate — `check_pipeline.mjs` carried a check asserting exactly it, with a
+comment reading *"Tolerating is not forgiving"*. The intent was right and the
+consequence was not: a pipeline that goes red whether or not it worked is not a signal,
+it is camouflage, and here it was literally the camouflage that four genuinely broken
+nights hid behind. Had the only red runs been real, a week would not have passed.
+
+`fetch_job_log.status` still says `failure` whenever anything missed, because the
+watchdog reads it. What was missing is the *other* fact about that row — whether the run
+published anyway — and `evaluateHealth` now takes a tolerated shortfall as a **warning**
+(reported every night, in the report, with the counts) and reserves **error** for a run
+that refused to publish. Tolerating is still not forgiving; it is just no longer fatal.
+
+Carried as a tag in the message (`| published=tolerated`), parsed in the collect half,
+exactly as the egress tag already is (§11g) — **not** as a third status value, because
+`status` has a `CHECK (status in ('success','failure'))` constraint and widening it means
+a migration that has to land before the code that writes the new value. That ordering
+fails closed on a live pipeline, for a cosmetic gain.
+
+### 3. A workbook verifier that assumed the screen was never empty
+
+2026-10-02 fetched and published the screens, then failed building the workbook:
+
+```
+FAIL Golden Breakout rank 1: None   expected 1
+FAIL Golden Breakout rank 0: 'Rank' expected 0
+```
+
+Nothing cleared gate 5 that day — 503 instruments through gate 1, 447 through gate 2,
+436 through gate 3, **1** through gate 4, **0** through gate 5, with breadth at 49.8% and
+new lows outnumbering new highs 242 to 76. An empty Golden Breakout screen is a market
+outcome, not a fault; the five gates are strict and the candidate count had already
+thinned from 12 on 2026-09-25 to 3 on 2026-09-29.
+
+The two rank checks read `A2` and `A{len+1}`. With no candidates that is a blank cell and
+the header, so a **correct** workbook failed verification and the publish step was
+skipped. They are now guarded — and the empty case is still *checked*, not skipped: the
+first data row must be blank, because a screen that is empty and a screen that silently
+lost its rows look identical from a row count. (The same checks were also degenerate at
+*one* candidate: both labels and both cell references collapsed to `A2`, so 2026-09-29
+printed `ok Golden Breakout rank 1` twice. First and last rank are now distinct checks.)
+
+### What was added
+
+Pipeline self-checks 89 → 99: six on `barsOf` (one row per date; a live bar and a settled
+bar collapsing; the later observation winning; order preserved; a gap staying a gap; and
+the pre-existing rule that a date is the exchange's, not UTC's), three on the tolerated
+distinction including the tag round-trip beside the egress tag, one asserting
+`daily_fetch` decides tolerance *before* it writes the row it has to appear on, and one
+on the verifier's guard. Negative-tested: all six of the new or changed assertions fail
+when their fix is reverted, including the source check, which catches the tolerance
+boundary drifting from `<=` to `<`.
+
+**Still open, and it is the one that matters.** Alerting remains unconfigured. Every fix
+above shortens the next outage; none of them shortens the time before someone hears
+about it.
 
 ---
 

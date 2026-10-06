@@ -46,10 +46,10 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { arrearsInstrumentDays, deepRepullCap, exchangeDateFormatter, restatementOf,
+import { arrearsInstrumentDays, barsOf as rawBarsOf, deepRepullCap, restatementOf,
          SETTLEMENT_DAYS, unabsorbedEventDate, unsettledFrom } from "./meridian-detect.js";
 import { connect, DEFAULT_RETENTION_DAYS, meterLine, readAll, readCSV,
-         recordEgress, rPrice, sleep, withRetry } from "./meridian-io.js";
+         recordEgress, rPrice, sleep, toleratedSuffix, withRetry } from "./meridian-io.js";
 
 const BASE = dirname(fileURLToPath(import.meta.url));
 const CHART = "https://query1.finance.yahoo.com/v8/finance/chart/";
@@ -142,27 +142,10 @@ async function chart(ticker, range, withEvents) {
 
 // A bar's date is its exchange's LOCAL date, not UTC. Reading Yahoo's timestamps as
 // UTC put 125 ASX200 bars on Sundays and shifted every Asian index by a day (§3.2a).
-function barsOf(result) {
-  const fmt = exchangeDateFormatter(result);
-  const ts = result.timestamp || [];
-  const q = result.indicators?.quote?.[0] || {};
-  const adj = result.indicators?.adjclose?.[0]?.adjclose;
-  const out = [];
-  for (let i = 0; i < ts.length; i++) {
-    const close = q.close?.[i];
-    if (close == null || close <= 0) continue;          // a gap, never a fabricated bar
-    const a = adj?.[i] ?? close;
-    const ratio = close ? a / close : 1;
-    out.push({
-      date: fmt.format(new Date(ts[i] * 1000)),
-      high: q.high?.[i] != null ? rPrice(q.high[i] * ratio) : null,
-      low: q.low?.[i] != null ? rPrice(q.low[i] * ratio) : null,
-      close: rPrice(a),
-      volume: q.volume?.[i] ? Math.round(q.volume[i]) : null,
-    });
-  }
-  return out;
-}
+// Lives in meridian-detect.js so it can be tested without a network: it is the shape
+// of this payload, not the mechanics of fetching it, and one payload can name the
+// same date twice (§11l).
+const barsOf = (result) => rawBarsOf(result, rPrice);
 
 // ---------------------------------------------------------------- db
 
@@ -428,16 +411,27 @@ if (!DRY) {
   }));
 }
 
+// Decided here rather than at the exit below, because the job-log row has to carry it:
+// the health check reads that row hours later, in another process, and "failure" alone
+// cannot tell a night that published from a night that refused (§11l).
+const FAILURE_TOLERANCE = 0.15;
+const failedShare = failures.length / Math.max(targets.length, 1);
+const published = failures.length > 0 && failedShare <= FAILURE_TOLERANCE;
+
 if (!DRY) {
   await db.from("fetch_job_log").insert({
     job_type: "daily",
     status: failures.length ? "failure" : "success",
-    // Deliberately UNTAGGED. This row describes one step, and this step is 5MB of a
-    // 275MB night; tagging it made the gauge read 2% of the allowance against a real
-    // 118%. The pipeline total is written by the capacity check, which runs last and
-    // can see every step's meter.
+    // Deliberately UNTAGGED for EGRESS. This row describes one step, and this step is
+    // 5MB of a 275MB night; tagging it made the gauge read 2% of the allowance against
+    // a real 118%. The pipeline total is written by the capacity check, which runs last
+    // and can see every step's meter.
+    //
+    // It IS tagged when a shortfall was tolerated and published, which is a different
+    // fact about this same row and the only way the health check can tell the two
+    // kinds of "failure" apart.
     message: `swept ${targets.length}, +${appended} bars, ${flagged.length} re-pulled, `
-           + `${failures.length} failed`,
+           + `${failures.length} failed` + (published ? ` ${toleratedSuffix()}` : ""),
     started_at: new Date(t0).toISOString(), finished_at: new Date().toISOString(),
   });
 }
@@ -465,9 +459,8 @@ console.log(`\n${((Date.now() - t0) / 60000).toFixed(1)} min — ${meterLine(db.
 // No watermark moved for any failure, so tomorrow's sweep retries them untouched --
 // which is exactly what made the 2026-09-21 outage self-healing once it stopped
 // blocking the publish.
-const FAILURE_TOLERANCE = 0.15;
 if (failures.length) {
-  const share = failures.length / Math.max(targets.length, 1);
+  const share = failedShare;
   console.error(`\n${failures.length} FAILURE(S) — ${(share * 100).toFixed(1)}% of ${targets.length}:`);
   failures.slice(0, 40).forEach((f) => console.error(`  ${f.symbol}: ${f.error}`));
   if (failures.length > 40) console.error(`  ... and ${failures.length - 40} more`);

@@ -171,9 +171,24 @@ def main():
         check(f"Universe!I{unpriced[0] + 2} unpriced lookup", "Universe", f"I{unpriced[0] + 2}", "No")
         check(f"Universe!I{unpriced[-1] + 2} unpriced lookup", "Universe", f"I{unpriced[-1] + 2}", "No")
 
-    # Golden Breakout / Sectoral Breakout rank columns
-    check("Golden Breakout rank 1", "Golden Breakout", "A2", 1)
-    check(f"Golden Breakout rank {len(breakout)}", "Golden Breakout", f"A{len(breakout) + 1}", len(breakout))
+    # Golden Breakout rank column — first row and last row.
+    #
+    # Guarded, because an EMPTY breakout screen is a legitimate market outcome, not a
+    # fault: the five gates are strict and on 2026-10-02 nothing cleared gate 5 (503
+    # through gate 1, 1 through gate 4, 0 through gate 5, with breadth at 49.8% and new
+    # lows outnumbering new highs 242 to 76). These two checks assumed at least one
+    # candidate, read the header row and a blank cell, and failed the workbook build
+    # for a correct workbook — taking the night's publish with it (§11l).
+    #
+    # When it is empty the sheet is still CHECKED, not skipped: the first data row must
+    # be blank. An empty screen and a screen that silently lost its rows look identical
+    # from a row count alone.
+    if breakout:
+        check("Golden Breakout first rank", "Golden Breakout", "A2", 1)
+        check(f"Golden Breakout last rank (row {len(breakout) + 1})",
+              "Golden Breakout", f"A{len(breakout) + 1}", len(breakout))
+    else:
+        check("Golden Breakout is empty, and the sheet says so", "Golden Breakout", "A2", None)
 
     # Market Breadth net-highs
     check("Market Breadth net highs (last)", "Market Breadth", f"I{len(breadth) + 1}",

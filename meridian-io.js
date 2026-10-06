@@ -336,6 +336,26 @@ export function parseEgress(message) {
   return m ? { bytes: Number(m[1]), requests: Number(m[2]) } : null;
 }
 
+/**
+ * The same trick for the other thing a job-log message has to carry across process
+ * boundaries: whether a run that reported "failure" nonetheless published.
+ *
+ * fetch_job_log.status is constrained to 'success' or 'failure' and deliberately says
+ * "failure" whenever ANY instrument missed, so the watchdog can see it (§11e). But the
+ * 15% tolerance exists precisely so one dud instrument does not cost the other 2,237
+ * their day — and the health check was reading that same row as an error and failing
+ * the run anyway. One instrument out of 2,238 turned a complete, published night red
+ * (§11l). A permanently red pipeline is not a signal; it is camouflage, and it hid
+ * four genuinely broken nights behind it.
+ *
+ * Tagged rather than given a third status because the status column has a CHECK
+ * constraint, and widening it would mean a migration landing before the code that
+ * writes the new value — an ordering that fails closed on the live pipeline.
+ */
+export const TOLERATED_TAG = /\| published=tolerated\b/;
+export const toleratedSuffix = () => "| published=tolerated";
+export const parseTolerated = (message) => TOLERATED_TAG.test(message ?? "");
+
 // ---------------------------------------------------------------- price reads
 /**
  * The trailing window of EQUITY bars, keyed by ISIN, in the shape every consumer of

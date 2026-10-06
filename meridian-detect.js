@@ -20,6 +20,53 @@ export function exchangeDateFormatter(result) {
 }
 
 /**
+ * Yahoo's daily bars as rows keyed by exchange-LOCAL date — at most one row per date.
+ *
+ * ONE ROW PER DATE, LAST WINS, and that is not tidying up after Yahoo. It is the fix
+ * for four dead nights (§11l). Yahoo appends a live, partial bar for the session in
+ * progress stamped with the CURRENT time, next to the settled bar for the same local
+ * date stamped at local midnight. Both format to the same date, so one payload can
+ * carry two bars for one day — and Postgres refuses that outright:
+ *
+ *     ON CONFLICT DO UPDATE command cannot affect row a second time
+ *
+ * because a single upsert statement may not touch the same row twice. The whole fetch
+ * step died on the first instrument that hit it, taking the night with it.
+ *
+ * The later timestamp is the more recent observation of that date, so it wins — the
+ * same rule the git mirror merges on (meridian-history.js), and consistent with the
+ * settlement window, which already holds that a bar inside it is provisional and gets
+ * rewritten rather than judged.
+ *
+ * `round` is passed in rather than imported to keep this module free of dependencies,
+ * as restatementOf does with the same argument.
+ */
+export function barsOf(result, round) {
+  const fmt = exchangeDateFormatter(result);
+  const ts = result?.timestamp || [];
+  const q = result?.indicators?.quote?.[0] || {};
+  const adj = result?.indicators?.adjclose?.[0]?.adjclose;
+  // A Map, not an array plus a de-dupe pass: re-setting a key replaces the value and
+  // KEEPS the original position, so the rows stay in Yahoo's chronological order.
+  const byDate = new Map();
+  for (let i = 0; i < ts.length; i++) {
+    const close = q.close?.[i];
+    if (close == null || close <= 0) continue;          // a gap, never a fabricated bar
+    const a = adj?.[i] ?? close;
+    const ratio = close ? a / close : 1;
+    const date = fmt.format(new Date(ts[i] * 1000));
+    byDate.set(date, {
+      date,
+      high: q.high?.[i] != null ? round(q.high[i] * ratio) : null,
+      low: q.low?.[i] != null ? round(q.low[i] * ratio) : null,
+      close: round(a),
+      volume: q.volume?.[i] ? Math.round(q.volume[i]) : null,
+    });
+  }
+  return [...byDate.values()];
+}
+
+/**
  * DETECTOR 1 — an explicit dividend or split we cannot already have absorbed.
  *
  * The events feed returns every dividend and split in the requested range, and the
