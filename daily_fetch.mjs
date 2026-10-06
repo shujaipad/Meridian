@@ -145,7 +145,11 @@ async function chart(ticker, range, withEvents) {
 // Lives in meridian-detect.js so it can be tested without a network: it is the shape
 // of this payload, not the mechanics of fetching it, and one payload can name the
 // same date twice (§11l).
-const barsOf = (result) => rawBarsOf(result, rPrice);
+// Tallied across the run rather than dropped silently: a market holiday takes several
+// hundred placeholder bars out of one night's payloads, and that should be a line in
+// the log rather than a number that quietly fails to appear (§11m).
+const barStats = { placeholders: 0 };
+const barsOf = (result) => rawBarsOf(result, rPrice, barStats);
 
 // ---------------------------------------------------------------- db
 
@@ -436,6 +440,10 @@ if (!DRY) {
   });
 }
 
+if (barStats.placeholders) {
+  console.log(`\n${barStats.placeholders.toLocaleString()} placeholder bar(s) ignored — no volume, no range: `
+            + "a closed market or a halted instrument, not a session.");
+}
 recordEgress("fetch", db.meter, BASE);
 console.log(`\n${((Date.now() - t0) / 60000).toFixed(1)} min — ${meterLine(db.meter)}`);
 // WHAT A PARTIAL FAILURE SHOULD COST, and it should not be everyone else's day.

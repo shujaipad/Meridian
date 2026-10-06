@@ -38,10 +38,28 @@ export function exchangeDateFormatter(result) {
  * settlement window, which already holds that a bar inside it is provisional and gets
  * rewritten rather than judged.
  *
+ * A DAY ON WHICH NOTHING TRADED IS NOT A TRADING DAY, which is the second thing this
+ * had wrong (§11m). Yahoo emits a placeholder bar for an exchange holiday: null volume,
+ * and high == low == close, all three carrying the previous session's close. 693 of
+ * them were written as real sessions for Gandhi Jayanti (2026-10-02) — every one with
+ * no volume, no range, and a close identical to 2026-10-01's. The mirror holds the same
+ * artifact on at least eight earlier dates, including Maharashtra Day.
+ *
+ * The test is the conjunction, and both halves are load-bearing. No volume alone would
+ * delete every FX bar, since Yahoo reports no volume for currency pairs at all. No
+ * range alone would delete a genuine single-trade day on an illiquid stock. Together
+ * they say nothing changed hands and the price did not move, which is a closed market
+ * — or a halted stock, where dropping the bar is equally right, because a day with no
+ * trades has no price to record.
+ *
+ * Conservative where it cannot see: if Yahoo returns no high or low, the bar is KEPT,
+ * because absence of a range is not evidence of no range.
+ *
  * `round` is passed in rather than imported to keep this module free of dependencies,
- * as restatementOf does with the same argument.
+ * as restatementOf does with the same argument. `stats`, if given, is incremented so a
+ * run can say how many it dropped — a holiday should be visible in the log, not silent.
  */
-export function barsOf(result, round) {
+export function barsOf(result, round, stats = null) {
   const fmt = exchangeDateFormatter(result);
   const ts = result?.timestamp || [];
   const q = result?.indicators?.quote?.[0] || {};
@@ -52,13 +70,18 @@ export function barsOf(result, round) {
   for (let i = 0; i < ts.length; i++) {
     const close = q.close?.[i];
     if (close == null || close <= 0) continue;          // a gap, never a fabricated bar
+    const high = q.high?.[i], low = q.low?.[i];
+    if (!q.volume?.[i] && high === close && low === close) {
+      if (stats) stats.placeholders = (stats.placeholders ?? 0) + 1;
+      continue;                                         // market closed; not a session
+    }
     const a = adj?.[i] ?? close;
     const ratio = close ? a / close : 1;
     const date = fmt.format(new Date(ts[i] * 1000));
     byDate.set(date, {
       date,
-      high: q.high?.[i] != null ? round(q.high[i] * ratio) : null,
-      low: q.low?.[i] != null ? round(q.low[i] * ratio) : null,
+      high: high != null ? round(high * ratio) : null,
+      low: low != null ? round(low * ratio) : null,
       close: round(a),
       volume: q.volume?.[i] ? Math.round(q.volume[i]) : null,
     });

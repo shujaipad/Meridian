@@ -43,13 +43,13 @@ what each defect had in common. As of the first green end-to-end run:
 
 | | |
 |---|---|
-| Nightly pipeline | Six consecutive red nights 2026-09-28 to 2026-10-05, three defects, all fixed 2026-10-06 (§11l) |
+| Nightly pipeline | Green 2026-10-06 after six red nights; three defects fixed and verified in production (§11l), a fourth found while verifying them (§11m) |
 | Screens | All five asset classes, published same-day |
 | Workbook | Same day, same rows, same window as the screens (§11d) |
 | Database | ~208 MB of Supabase's 500 MB — ~42%, growing ~114 MB/year (2026-09-28) |
 | Retention | 1,100 days, pruned nightly, so the table is flat rather than growing |
 | Alerting | Built, verified, and **reaching nobody** — the two secrets have never been set, which is why §11l took a week to notice |
-| Checks | 99 pipeline self-checks, 65 browser checks, all negative-tested |
+| Checks | 104 pipeline self-checks, 65 browser checks, all negative-tested |
 
 The prototype this section used to describe — a single client-side artifact with
 user-uploaded CSVs and no automation — is still in the repository as `meridian.jsx`,
@@ -3255,6 +3255,36 @@ lost its rows look identical from a row count. (The same checks were also degene
 *one* candidate: both labels and both cell references collapsed to `A2`, so 2026-09-29
 printed `ok Golden Breakout rank 1` twice. First and last rank are now distinct checks.)
 
+### Verified in production, 2026-10-06
+
+The pipeline was dispatched by hand at 10:17 UTC, after the Indian close rather than
+during the session, because publishing an intraday snapshot stamped as a close is the
+thing §5 forbids. Every step green, and **all three fixes were exercised for real**:
+
+- **Fix 1** — fetch completed, 2,238 swept, +5,132 bars, no upsert error. All five asset
+  classes `as of 2026-10-06 (0 days old)`. Partly circumstantial: 10:38 UTC is outside
+  the 19:00–22:00 window that produces the collision, so this shows the refactor is
+  sound rather than that the collision is handled. The deterministic proof is the unit
+  check; tonight's scheduled run lands in the window again.
+- **Fix 2** — exercised, because one instrument failed again (the third night running):
+  `[warning] job-failed: The most recent daily run published with instruments missing`.
+  Warning, not error; the run went green. On the old code this night would have been red
+  for the fourth time in six.
+- **Fix 3** — exercised the same day it shipped. `gate 5: 0` again, and
+  `ok Golden Breakout is empty, and the sheet says so`. The condition that broke
+  2026-10-02 recurred within four days.
+
+Backlog cleared in one run: the mirror commit carries **10,916 bars (9,504 new, 1,412
+corrected)**, and 2026-10-05 landed for the full priced universe of 2,089 equities — the
+~138 instruments the dead run never reached self-healed exactly as the no-moving-watermark
+design intended. Workbook published as of 2026-10-06. Database 210 MB of 500 MB (42.0%),
+egress unchanged at ~2.94 GB/month of 5 GB.
+
+One cosmetic defect the same report exposed: the recent-jobs list printed `FAIL` for the
+tolerated row and `^ the most recent run did not succeed` beneath it, while the health
+block two screens down called it a warning. The report contradicted itself. There are now
+three marks — `ok`, `part`, `FAIL` — and the note under a tolerated run says it published.
+
 ### What was added
 
 Pipeline self-checks 89 → 99: six on `barsOf` (one row per date; a live bar and a settled
@@ -3269,6 +3299,89 @@ boundary drifting from `<=` to `<`.
 **Still open, and it is the one that matters.** Alerting remains unconfigured. Every fix
 above shortens the next outage; none of them shortens the time before someone hears
 about it.
+
+---
+
+## 11m. The market was shut and we wrote 693 sessions anyway
+*(2026-10-06)*
+
+Found by reading the git mirror while verifying §11l, which is the first use the mirror
+has been put to beyond existing. The question was innocent — which instruments failed
+three nights running — and the answer was something else entirely.
+
+**2026-10-02 was Gandhi Jayanti. The NSE was closed. The database holds 693 equity bars
+for that date.** Every single one of them:
+
+- volume **null**
+- high **==** low **==** close
+- close **identical** to the instrument's 2026-10-01 close
+
+```
+equity,INE002A01018,2026-10-02,1167.7,1167.7,1167.7,     <- RELIANCE, Oct 1's close
+equity,INE040A01034,2026-10-02,721.2,721.2,721.2,        <- HDFCBANK, Oct 1's close
+```
+
+693 of 693 matched that shape. Not a sample — all of them. Yahoo emits a placeholder bar
+for an exchange holiday, carrying the previous session forward with no volume and no
+range, and the pipeline had always written them as real trading days.
+
+**It is not one holiday.** The same artifact appears in the mirror on at least eight
+earlier dates — 2026-09-14 (932 bars), 2026-06-26 (213), 2026-05-28 (212), 2026-05-01
+(118, Maharashtra Day), 2026-01-15 (124), 2025-03-18 (141), 2024-01-15 (47) — **5,834
+such bars across the 171,684 equity bars the mirror holds.** Confirmed independently
+against live Yahoo: `RELIANCE.NS` over a one-month window returns 22 bars of which
+**2 are placeholders**, which is exactly the two NSE holidays in that window.
+
+### The rule, and why both halves of it are load-bearing
+
+**A day on which nothing traded is not a trading day.** A bar is dropped when it has no
+volume **and** no range. Neither half works alone:
+
+- *No volume alone* would delete **every FX bar ever fetched** — Yahoo reports no volume
+  for currency pairs at all. `EURUSD=X` has null volume on all 22 of its real bars.
+- *No range alone* would delete a genuine **single-trade day** on an illiquid stock,
+  where high == low == close is the honest record of one print.
+
+Together they say nothing changed hands and the price did not move, which is a closed
+market — or a halted instrument, where dropping is equally right, because a day with no
+trades has no price to record. Measured against live payloads across all five classes:
+the rule removes the two NSE holidays from `RELIANCE.NS` and `HDFCBANK.NS` and touches
+**nothing** in FX, gold, the S&P, the Nifty or bitcoin. Nifty 50 needs no help — Yahoo
+gives an index a proper null close on a holiday, which the pre-existing gap rule already
+dropped, which is part of why this went unnoticed: the headline index looked right.
+
+And conservative where it cannot see: if Yahoo returns no high or low, the bar is kept,
+because absence of a range is not evidence of no range.
+
+The count is now printed. A holiday takes several hundred bars out of a night's payloads
+and that should be a line in the log, not a number that quietly fails to appear.
+
+### What the existing rows cost, and what has not been done
+
+The ingestion fix stops new ones; **the rows already stored stay**, because the sweep
+upserts and never deletes, so they age out only with the 1,100-day retention window.
+What a flat zero-volume bar inside a window does: an SMA spans one fewer real session
+than its name claims, RSI gains a zero-change period, and — the one that matters for the
+screens — the volatility-contraction gate reads a zero-range day as contraction it did
+not earn, which can only make a breakout signal easier to fire, not harder.
+
+The DB-wide count is not knowable from here; 5,834 is what the mirror holds, and the
+mirror is skewed toward deep re-pulls, which carry full retained history and therefore
+accumulate holidays. **Deleting production rows is not something to do unannounced**, so
+it is reported rather than done: a `DELETE FROM prices_daily WHERE volume IS NULL AND
+high = low AND low = close` is the whole of it, and it belongs behind a maintenance
+option with a dry-run count first.
+
+Self-checks 99 → 104. Negative-tested in both directions, which is the only way to test
+a conjunction: dropping on no-volume alone fails the FX check, and dropping on no-range
+alone fails the single-trade check.
+
+**A note on the test helper, because it nearly hid this.** `payload()` in
+`check_pipeline.mjs` defaulted an unspecified bar to `h = l = c` and `v = 0` — which is
+precisely the shape of a holiday placeholder. The moment `barsOf` learned to drop those,
+five existing checks began asserting against an empty array. They failed loudly, so no
+harm done; but a fixture whose defaults are indistinguishable from the pathology is a
+check that cannot see it. Unspecified bars now get a range and a volume.
 
 ---
 

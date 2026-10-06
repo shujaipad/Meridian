@@ -74,11 +74,19 @@ if (!facts.jobs.length) {
 } else {
   for (const j of facts.jobs) {
     const when = (j.finished_at ?? "").slice(0, 16).replace("T", " ");
-    const mark = j.status === "success" ? "ok  " : "FAIL";
+    // Three marks, not two. A run that missed some instruments and published anyway is
+    // neither a clean success nor a failed night, and printing it as FAIL made the
+    // report contradict its own health finding one screen further down (§11l).
+    const mark = j.status === "success" ? "ok  " : j.tolerated ? "part" : "FAIL";
     console.log(`    ${mark} ${when}  ${j.job_type}  ${(j.message ?? "").slice(0, 70)}`);
   }
   // A log that shows a failure and returns zero is the thing this replaces.
-  if (facts.jobs[0].status !== "success") console.log("    ^ the most recent run did not succeed");
+  const first = facts.jobs[0];
+  if (first.status !== "success") {
+    console.log(first.tolerated
+      ? "    ^ the most recent run published with instruments missing; tomorrow retries them"
+      : "    ^ the most recent run did not succeed");
+  }
 }
 
 // Byte sizes, if the helper function is installed. Optional on purpose: the report

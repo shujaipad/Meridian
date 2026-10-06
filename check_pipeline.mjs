@@ -254,15 +254,22 @@ console.log("\nbars, one per exchange-local date");
 
 // A Yahoo chart payload, minimally. `tz` drives the exchange-local date, which is the
 // whole point: the same instant is a different date in London and Kolkata.
+//
+// An unspecified bar gets a RANGE and a VOLUME, so it reads as a real session. The
+// defaults used to be `h = l = c` and `v = 0`, which is the exact shape of a holiday
+// placeholder -- once barsOf learned to drop those, every test built on the defaults
+// was asserting against an empty array. `"v" in b` rather than `??` so a test can pass
+// an explicit null volume (which is what Yahoo reports for every currency pair) and
+// mean it.
 const payload = (tz, bars) => ({
   meta: { exchangeTimezoneName: tz },
   timestamp: bars.map((b) => b.t),
   indicators: {
     quote: [{
       close: bars.map((b) => b.c),
-      high: bars.map((b) => b.h ?? b.c),
-      low: bars.map((b) => b.l ?? b.c),
-      volume: bars.map((b) => b.v ?? 0),
+      high: bars.map((b) => ("h" in b ? b.h : b.c == null ? b.c : b.c * 1.01)),
+      low: bars.map((b) => ("l" in b ? b.l : b.c == null ? b.c : b.c * 0.99)),
+      volume: bars.map((b) => ("v" in b ? b.v : 1000)),
     }],
   },
 });
@@ -338,6 +345,54 @@ await check("a bar's date is its exchange's local date, not UTC", () => {
   const kolkata = barsOf(payload("Asia/Kolkata", [{ t: instant, c: 1 }]), rPrice);
   return london[0].date === "2026-10-05" && kolkata[0].date === "2026-10-06" ? null
     : `london=${london[0].date} kolkata=${kolkata[0].date}`;
+});
+
+// A day on which nothing traded is not a trading day. All 693 bars Yahoo returned for
+// Gandhi Jayanti (2026-10-02) had null volume, high == low == close, and a close equal
+// to 2026-10-01's — and every one was written as a real session (§11m).
+await check("a holiday placeholder bar is not a session", () => {
+  const rows = barsOf(payload("Asia/Kolkata", [
+    { t: utc("2026-10-01T03:45:00Z"), c: 1167.7, h: 1180, l: 1160, v: 16771221 },
+    { t: utc("2026-10-02T03:45:00Z"), c: 1167.7, h: 1167.7, l: 1167.7, v: null },
+    { t: utc("2026-10-05T03:45:00Z"), c: 1186.4, h: 1190, l: 1170, v: 14254907 },
+  ]), rPrice);
+  return eq(rows.map((r) => r.date), ["2026-10-01", "2026-10-05"], "dates");
+});
+
+await check("the drop is counted, not silent", () => {
+  const stats = {};
+  barsOf(payload("Asia/Kolkata", [
+    { t: utc("2026-10-02T03:45:00Z"), c: 10, h: 10, l: 10, v: 0 },
+    { t: utc("2026-10-05T03:45:00Z"), c: 11, h: 12, l: 10, v: 5 },
+  ]), rPrice, stats);
+  return stats.placeholders === 1 ? null : `counted ${stats.placeholders}`;
+});
+
+// BOTH HALVES OF THE TEST ARE LOAD-BEARING. Yahoo reports no volume for currency pairs
+// at all, so "no volume" alone would delete every FX bar ever fetched.
+await check("a currency bar with a range survives having no volume", () => {
+  const rows = barsOf(payload("Europe/London", [
+    { t: utc("2026-10-04T23:00:00Z"), c: 1.1233, h: 1.1245, l: 1.1207, v: null },
+  ]), rPrice);
+  return rows.length === 1 && rows[0].volume === null ? null
+    : `dropped a real FX bar: ${JSON.stringify(rows)}`;
+});
+
+// And "no range" alone would delete a genuine single-trade day on an illiquid stock.
+await check("a single-trade day survives having no range", () => {
+  const rows = barsOf(payload("Asia/Kolkata", [
+    { t: utc("2026-10-05T03:45:00Z"), c: 42, h: 42, l: 42, v: 300 },
+  ]), rPrice);
+  return rows.length === 1 ? null : "dropped a real single-trade bar";
+});
+
+// Conservative where it cannot see: absence of a range is not evidence of no range.
+await check("a bar with no high or low reported is kept", () => {
+  const res = payload("Asia/Kolkata", [{ t: utc("2026-10-05T03:45:00Z"), c: 42, v: 0 }]);
+  res.indicators.quote[0].high = [null];
+  res.indicators.quote[0].low = [null];
+  const rows = barsOf(res, rPrice);
+  return rows.length === 1 ? null : "dropped a bar whose range was simply not reported";
 });
 
 // ---------------------------------------------------------------- detector 1
