@@ -17,6 +17,7 @@
  * actually predicts trouble: how many rows there are and how fast they arrive.
  */
 import { collectHealth, EGRESS_LIMIT_MB, egressPerMonthMb, evaluateHealth, mbPerYear,
+         PLACEHOLDER_FIX_DATE,
          RUNS_PER_MONTH, usedMbOf } from "./meridian-health.js";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -72,13 +73,18 @@ console.log("\n  recent jobs");
 if (!facts.jobs.length) {
   console.log("    no runs recorded yet");
 } else {
-  for (const j of facts.jobs) {
+  // Twelve rows are collected so the recurring-shortfall rule can see three sweeps;
+  // five is as many as a person reads.
+  for (const j of facts.jobs.slice(0, 5)) {
     const when = (j.finished_at ?? "").slice(0, 16).replace("T", " ");
     // Three marks, not two. A run that missed some instruments and published anyway is
     // neither a clean success nor a failed night, and printing it as FAIL made the
     // report contradict its own health finding one screen further down (§11l).
     const mark = j.status === "success" ? "ok  " : j.tolerated ? "part" : "FAIL";
-    console.log(`    ${mark} ${when}  ${j.job_type}  ${(j.message ?? "").slice(0, 70)}`);
+    // Widened from 70: the failing symbols now ride in this field and were being cut
+    // off, which left the list showing a count and withholding the answer to the
+    // question the count raises (§11n).
+    console.log(`    ${mark} ${when}  ${j.job_type}  ${(j.message ?? "").slice(0, 110)}`);
   }
   // A log that shows a failure and returns zero is the thing this replaces.
   const first = facts.jobs[0];
@@ -162,6 +168,20 @@ if (!metered.length) {
             + ` x ${RUNS_PER_MONTH} runs = ~${(perMonth / 1024).toFixed(2)} GB/month`
             + ` of ${(EGRESS_LIMIT_MB / 1024).toFixed(0)} GB`
             + ` — ${((perMonth / EGRESS_LIMIT_MB) * 100).toFixed(0)}%`);
+}
+
+// Stored holiday placeholder bars (§11m). Printed every night whether or not it is a
+// finding, because the number is the thing the delete-or-wait decision needs and it had
+// never been measured -- the 5,834 in the git mirror are a skewed sample of it.
+console.log("\n  integrity");
+if (!facts.placeholders) {
+  console.log("    placeholder bars: not measured (the count query did not run)");
+} else {
+  const { count, newest } = facts.placeholders;
+  if (!count) console.log("    no stored equity bar is missing both volume and range");
+  else console.log(`    ${count.toLocaleString()} equity bars have no volume and no range`
+                 + ` — holiday placeholders, newest ${newest ?? "unknown"}`
+                 + (newest && newest <= PLACEHOLDER_FIX_DATE ? ", all predating the fix" : ""));
 }
 
 // The same verdict the watchdog reaches, from the same facts and the same function.

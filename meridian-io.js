@@ -356,6 +356,33 @@ export const TOLERATED_TAG = /\| published=tolerated\b/;
 export const toleratedSuffix = () => "| published=tolerated";
 export const parseTolerated = (message) => TOLERATED_TAG.test(message ?? "");
 
+/**
+ * And the third thing a job-log message has to carry: WHICH instruments missed.
+ *
+ * The count was always there ("1 failed") and the symbols were only ever in the fetch
+ * step's stderr, several hundred log lines above the report that mentions them. Three
+ * nights in a row reported exactly one failure and answering "the same one?" meant
+ * reading three Actions logs by hand (§11n). The health check needs the symbols too:
+ * three nights of three DIFFERENT transient misses is noise, and three nights of the
+ * same instrument is a ticker to fix or an instrument to deactivate.
+ *
+ * Bounded at ten, because this rides in a text column a human reads in a table. The
+ * prose count beside it is always complete.
+ */
+export const FAILED_SYMBOL_CAP = 10;
+export const FAILED_TAG = /\| failed=([^|]+)/;
+export function failedSuffix(symbols) {
+  const named = symbols.slice(0, FAILED_SYMBOL_CAP);
+  const extra = symbols.length - named.length;
+  // No "|" inside the value: that character terminates the tag.
+  return `| failed=${named.join(",")}${extra > 0 ? ` +${extra}` : ""}`;
+}
+export function parseFailed(message) {
+  const m = FAILED_TAG.exec(message ?? "");
+  if (!m) return [];
+  return m[1].trim().split(/[\s,]+/).filter((x) => x && !x.startsWith("+"));
+}
+
 // ---------------------------------------------------------------- price reads
 /**
  * The trailing window of EQUITY bars, keyed by ISIN, in the shape every consumer of

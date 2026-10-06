@@ -49,7 +49,7 @@ what each defect had in common. As of the first green end-to-end run:
 | Database | ~208 MB of Supabase's 500 MB — ~42%, growing ~114 MB/year (2026-09-28) |
 | Retention | 1,100 days, pruned nightly, so the table is flat rather than growing |
 | Alerting | Built, verified, and **reaching nobody** — the two secrets have never been set, which is why §11l took a week to notice |
-| Checks | 104 pipeline self-checks, 65 browser checks, all negative-tested |
+| Checks | 114 pipeline self-checks, 65 browser checks, all negative-tested |
 
 The prototype this section used to describe — a single client-side artifact with
 user-uploaded CSVs and no automation — is still in the repository as `meridian.jsx`,
@@ -3382,6 +3382,123 @@ precisely the shape of a holiday placeholder. The moment `barsOf` learned to dro
 five existing checks began asserting against an empty array. They failed loudly, so no
 harm done; but a fixture whose defaults are indistinguishable from the pathology is a
 check that cannot see it. Unspecified bars now get a range and a volume.
+
+---
+
+## 11n. Three questions today's checks left open, and the holes in the answers
+*(2026-10-06)*
+
+§11l and §11m each ended on something unmeasured. This closes all three.
+
+### How many placeholder bars are actually stored
+
+§11m could say 5,834 of the 171,684 equity bars in the git mirror and nothing about the
+1.39M in the database, because the mirror is skewed toward deep re-pulls, which carry
+full retained history and therefore accumulate holidays. The delete-or-wait decision
+needs the real number and there was no way to ask for it from outside the pipeline.
+
+The obstacle looked like SQL: the defining test is `volume IS NULL AND high = low AND
+low = close`, and PostgREST cannot compare two columns. **Measuring the mirror dissolved
+it.** Of its 171,684 equity bars:
+
+| | flat | has a range |
+|---|---|---|
+| **no volume** | 5,784 | **0** |
+| **has volume** | 2,765 | 163,135 |
+
+Not one no-volume equity bar has a range. For equities, "no volume" and "placeholder"
+are the same set, so a plain `volume IS NULL` count — one `head` request with an inner
+join to `universe` for the asset class — is **exact**, not an approximation. Equities
+only, because Yahoo reports no volume for currency pairs at all and indices and
+commodities are mixed.
+
+That table also retro-justifies §11m's conjunction with a number: **2,765 bars are flat
+*with* volume.** Those are real single-trade days on illiquid stocks, and a
+no-range-only rule would have deleted every one of them.
+
+`db_report` now prints the count nightly whether or not it is a finding, because the
+number is the input to a decision rather than an alarm. What *is* an alarm is a
+placeholder dated **after** the fix shipped: deep re-pulls rewrite old history and those
+bars are dropped on the way in now, so nothing at any date should ever arrive as a
+placeholder again. If one does, the drop in `barsOf` is not holding, and that is an
+error. The check verifies my own fix in production every night and goes quiet once the
+residue is old.
+
+The count query is new, untested against the live schema, and deliberately **cannot fail
+a night on its own** — it degrades to the existing `unreadable` warning, like the
+optional capacity helper.
+
+### Which instrument keeps failing — and the answer is that none of them does
+
+29 September, 2 October and 6 October each reported exactly `1 failed`, and §11l went
+looking for the symbol, found the holiday bars on the way, and never came back. The
+honest reading of three identical counts is a ticker that is quietly dead.
+
+**It is not.** The mirror settles it without reading a single log:
+
+```
+2026-09-30: 2089 priced equities     identical sets 09-30 vs 10-01: True
+2026-10-01: 2089                     identical sets 09-30 vs 10-05: True
+2026-10-05: 2089                     present 09-30, absent on both later days: 0
+```
+
+Every one of the 2,089 priced equities has a bar on every real trading day. An
+instrument that kept failing would be absent from all of them; an instrument that failed
+once was **backfilled by the next successful sweep**, which is the no-moving-watermark
+design doing exactly what §11c claimed for it, observed rather than argued.
+
+**The limit of that test, stated rather than glossed.** It can only see instruments that
+have price history. An instrument whose ticker resolves but whose fetch has *always*
+404'd would fail every night and never appear in the mirror at all, so a persistent
+failure confined to the 149 equities with no stored history is still possible. That is
+the cohort §9 item 3a is already about.
+
+So the symbols now ride in the job-log message (`| failed=MONOLITH,QLINE`, capped at ten
+with a `+N`, parsed back out the same way the egress and tolerated tags are). They were
+only ever in the fetch step's stderr, several hundred log lines above the report that
+counts them, and `db_report`'s message column was clipped at 70 characters — showing a
+count and withholding the answer to the question the count raises. Widened to 110.
+
+### The hole the warning level opened, closed
+
+§11l demoted a tolerated shortfall from error to warning, and that was right for a
+transient miss and **wrong for a shortfall that never heals**. The entire argument for
+tolerating one is "tomorrow's sweep picks them up"; by the third night that argument is
+simply false, and the warning would have repeated nightly forever.
+
+Three consecutive sweeps that published with instruments missing is now an **error**,
+naming the instruments that failed on *every* night of the streak — the intersection, not
+the union, because the instruments that come and go are the transient ones and naming
+them as repeat offenders would send someone after the wrong thing. The finding points at
+`resolve_tickers.mjs` or deactivating the instrument.
+
+**Why a red run here is fair, where §11l's was camouflage.** The old red was unavoidable
+and uninformative: any single transient miss, forever, with no action available. This one
+names a specific instrument, has a specific remedy, and clears the moment one sweep comes
+back clean. A red that a person can act on and close is a signal; a red that is simply
+the pipeline's resting state is not.
+
+Two mechanical details that decide whether it works at all:
+
+- **The streak counts sweeps, not rows.** Each night writes two job-log rows — the sweep
+  and the pipeline total — and reading the clean pipeline row between two bad sweeps as a
+  good night would make the threshold unreachable. The discriminator is the egress tag: a
+  sweep row never carries one and the pipeline row always does, which `daily_fetch`
+  documents at its insert and which is now load-bearing rather than incidental.
+- **Twelve rows collected, not five.** Two rows a night meant five rows was barely two
+  nights, and a three-sweep rule cannot see three sweeps in two nights. `db_report` still
+  prints five, which is as many as a person reads.
+
+**What this does to tonight.** Nothing: the 29 September and 2 October rows predate the
+tolerated tag, so they do not count as tolerated and the streak currently stands at one.
+The threshold can first be reached on the third *tagged* night, which leaves two nights
+to see the symbol and act before anything goes red.
+
+Self-checks 104 → 114. Negative-tested, each rule against the specific mistake it
+prevents: removing the egress discriminator breaks the streak on interleaved rows,
+disabling the escalation leaves three bad nights as a warning, swapping the intersection
+for a union names one-off instruments as repeat offenders, and dropping the fix-date
+guard makes historical residue raise a nightly error.
 
 ---
 

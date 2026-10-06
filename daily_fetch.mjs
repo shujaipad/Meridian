@@ -48,7 +48,7 @@ import { fileURLToPath } from "node:url";
 
 import { arrearsInstrumentDays, barsOf as rawBarsOf, deepRepullCap, restatementOf,
          SETTLEMENT_DAYS, unabsorbedEventDate, unsettledFrom } from "./meridian-detect.js";
-import { connect, DEFAULT_RETENTION_DAYS, meterLine, readAll, readCSV,
+import { connect, DEFAULT_RETENTION_DAYS, failedSuffix, meterLine, readAll, readCSV,
          recordEgress, rPrice, sleep, toleratedSuffix, withRetry } from "./meridian-io.js";
 
 const BASE = dirname(fileURLToPath(import.meta.url));
@@ -434,8 +434,15 @@ if (!DRY) {
     // It IS tagged when a shortfall was tolerated and published, which is a different
     // fact about this same row and the only way the health check can tell the two
     // kinds of "failure" apart.
+    //
+    // The symbols go in too. They were only ever in this step's stderr, hundreds of
+    // log lines above the report that counts them, and "is it the same instrument
+    // every night?" is the question that decides whether a tolerated shortfall is
+    // noise or a ticker to fix (§11n).
     message: `swept ${targets.length}, +${appended} bars, ${flagged.length} re-pulled, `
-           + `${failures.length} failed` + (published ? ` ${toleratedSuffix()}` : ""),
+           + `${failures.length} failed`
+           + (failures.length ? ` ${failedSuffix(failures.map((f) => f.symbol))}` : "")
+           + (published ? ` ${toleratedSuffix()}` : ""),
     started_at: new Date(t0).toISOString(), finished_at: new Date().toISOString(),
   });
 }

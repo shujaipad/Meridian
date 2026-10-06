@@ -16,7 +16,8 @@
 
 /** Everything the checks below need, in one pass. Returns facts, never verdicts. */
 export async function collectHealth(db, { tables = [] } = {}) {
-  const facts = { rowCounts: {}, freshness: {}, jobs: [], sizes: null, dupes: [], errors: [] };
+  const facts = { rowCounts: {}, freshness: {}, jobs: [], sizes: null, dupes: [],
+                  placeholders: null, errors: [] };
 
   for (const t of tables) {
     const { count, error } = await db.from(t).select("*", { count: "exact", head: true });
@@ -38,13 +39,17 @@ export async function collectHealth(db, { tables = [] } = {}) {
   } catch (e) { facts.errors.push(`freshness: ${e.message}`); }
 
   try {
+    // TWELVE, not five. Each night writes two rows -- the sweep and the pipeline total
+    // -- so five rows is barely two nights, and the recurring-shortfall rule below has
+    // to see three consecutive SWEEPS to say anything. db_report still prints five.
     const { data, error } = await db.from("fetch_job_log")
       .select("job_type,status,message,finished_at")
-      .order("finished_at", { ascending: false }).limit(5);
+      .order("finished_at", { ascending: false }).limit(12);
     if (error) throw new Error(error.message);
-    const { parseEgress, parseTolerated } = await import("./meridian-io.js");
+    const { parseEgress, parseFailed, parseTolerated } = await import("./meridian-io.js");
     facts.jobs = (data ?? []).map((j) => ({
-      ...j, egress: parseEgress(j.message), tolerated: parseTolerated(j.message) }));
+      ...j, egress: parseEgress(j.message), tolerated: parseTolerated(j.message),
+      failed: parseFailed(j.message) }));
   } catch (e) { facts.errors.push(`fetch_job_log: ${e.message}`); }
 
   // Byte sizes need the optional helper (supabase-migration-005-capacity.sql). Their
@@ -56,6 +61,38 @@ export async function collectHealth(db, { tables = [] } = {}) {
 
   const { data: dupes, error: dupErr } = await db.rpc("meridian_redundant_indexes");
   if (!dupErr && Array.isArray(dupes)) facts.dupes = dupes;
+
+  // HOW MANY HOLIDAY PLACEHOLDER BARS ARE STORED (§11m). Yahoo's placeholder for a
+  // closed exchange has no volume and no range; the ingestion fix drops them, but the
+  // sweep upserts and never deletes, so the ones already written stay until retention
+  // ages them out. Nobody knew the number, and the choice between a one-off delete and
+  // waiting cannot be made without it.
+  //
+  // A VOLUME-ONLY COUNT IS EXACT HERE, and that is measured rather than assumed: of the
+  // 171,684 equity bars in the git mirror, every single one lacking volume is also flat
+  // -- 5,784 of them -- and not one no-volume bar has a range. (2,765 bars are flat WITH
+  // volume: real single-trade days on illiquid stocks, which are not placeholders and
+  // which a range-only test would have deleted.) So for equities "no volume" and
+  // "placeholder" are the same set, and PostgREST cannot compare two columns anyway.
+  //
+  // Equities only. Yahoo reports no volume for currency pairs at all, and indices and
+  // commodities are mixed, so the same count across every class would be meaningless.
+  try {
+    const sel = "trade_date,universe!inner(asset_class)";
+    const { count, error: cErr } = await db.from("prices_daily")
+      .select(sel, { count: "exact", head: true })
+      .eq("universe.asset_class", "equity").is("volume", null);
+    if (cErr) throw new Error(cErr.message);
+    const { data: newest, error: nErr } = await db.from("prices_daily")
+      .select(sel).eq("universe.asset_class", "equity").is("volume", null)
+      .order("trade_date", { ascending: false }).limit(1);
+    if (nErr) throw new Error(nErr.message);
+    facts.placeholders = { count: count ?? 0, newest: newest?.[0]?.trade_date ?? null };
+  } catch (e) {
+    // Reported as unreadable, which is a warning. This is a new query against an
+    // embedded filter and it must not be able to fail a night on its own.
+    facts.errors.push(`placeholder bars: ${e.message.slice(0, 80)}`);
+  }
 
   return facts;
 }
@@ -144,10 +181,44 @@ export function evaluateHealth(facts, {
     // anyway is not a reason to wake anyone: its watermarks did not move, so the next
     // sweep retries exactly those instruments. It is still reported, every night, as a
     // warning. Only a run that REFUSED to publish is an error.
+    //
+    // UNLESS IT KEEPS HAPPENING, which is the hole the warning level opened (§11n). A
+    // shortfall that retries nightly and never heals is not transient, and the whole
+    // argument for tolerating it -- "tomorrow's sweep picks them up" -- is false by the
+    // third night. That is a ticker to re-resolve or an instrument to deactivate, and
+    // it has a remedy, which is what makes a red run here fair rather than camouflage:
+    // it clears the moment a sweep comes back clean.
+    const streak = toleratedStreak(facts.jobs);
+    const stuck = streak >= RECURRING_SHORTFALL_NIGHTS;
     const tolerated = Boolean(last.tolerated);
-    add(tolerated ? "warning" : "error", "job-failed",
-        `The most recent ${last.job_type} run ${tolerated ? "published with instruments missing" : "did not succeed"}: `
-        + `${last.message ?? "no message"}`);
+    if (tolerated && stuck) {
+      const repeats = recurringSymbols(facts.jobs, streak);
+      add("error", "job-failed",
+          `${streak} sweeps in a row have published with instruments missing, so they are `
+          + `not healing: ${last.message ?? "no message"}. `
+          + (repeats.length
+              ? `Failing every one of those nights: ${repeats.join(", ")}. `
+                + "Re-resolve the ticker (resolve_tickers.mjs) or deactivate the instrument."
+              : "A different set each night, so look for a shared cause rather than a ticker."));
+    } else {
+      add(tolerated ? "warning" : "error", "job-failed",
+          `The most recent ${last.job_type} run ${tolerated ? "published with instruments missing" : "did not succeed"}: `
+          + `${last.message ?? "no message"}`
+          + (tolerated && streak > 1 ? ` (${streak} nights running)` : ""));
+    }
+  }
+
+  // Holiday placeholder bars already stored (§11m). The count is a standing to-do and
+  // not a nightly alarm -- db_report prints it either way. What IS an alarm is a
+  // placeholder dated after the ingestion fix shipped, because that means the fix is
+  // not holding. Deep re-pulls rewrite old history, and those bars get dropped on the
+  // way in now, so nothing at any date should arrive as a placeholder again.
+  const ph = facts.placeholders;
+  if (ph?.newest && ph.newest > PLACEHOLDER_FIX_DATE) {
+    add("error", "placeholders",
+        `${ph.count.toLocaleString()} stored equity bars have no volume and no range, and the `
+        + `newest is ${ph.newest} — after the ${PLACEHOLDER_FIX_DATE} fix that should have `
+        + "stopped them being written. The drop in barsOf is not holding.");
   }
 
   const usedMb = usedMbOf(facts.sizes);
@@ -199,6 +270,43 @@ export function evaluateHealth(facts, {
 
   return findings;
 }
+
+/**
+ * Sweeps only, newest first. A sweep row NEVER carries an egress tag and the
+ * pipeline-total row written by the capacity check ALWAYS does, which is the invariant
+ * daily_fetch documents at its job-log insert and the only thing that separates the two
+ * kinds of row. Counting without it would read the clean pipeline row between two bad
+ * sweeps as a good night.
+ */
+const dailySweeps = (jobs) =>
+  (jobs ?? []).filter((j) => j.job_type === "daily" && j.egress == null);
+
+export const RECURRING_SHORTFALL_NIGHTS = 3;
+
+/** How many of the most recent sweeps, in a row, published with instruments missing. */
+export function toleratedStreak(jobs) {
+  let n = 0;
+  for (const j of dailySweeps(jobs)) {
+    if (j.status !== "success" && j.tolerated) n++;
+    else break;
+  }
+  return n;
+}
+
+/** The instruments that failed in EVERY night of the streak — the ones not healing. */
+export function recurringSymbols(jobs, streak) {
+  const rows = dailySweeps(jobs).slice(0, streak);
+  if (!rows.length) return [];
+  let common = new Set(rows[0].failed ?? []);
+  for (const r of rows.slice(1)) {
+    const here = new Set(r.failed ?? []);
+    common = new Set([...common].filter((x) => here.has(x)));
+  }
+  return [...common].sort();
+}
+
+/** The day the placeholder-bar drop shipped (§11m). Nothing newer should be one. */
+export const PLACEHOLDER_FIX_DATE = "2026-10-06";
 
 export const worstLevel = (findings) =>
   (findings.some((f) => f.level === "error") ? "error"

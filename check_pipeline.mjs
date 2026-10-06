@@ -14,17 +14,19 @@
  */
 import { readFileSync } from "node:fs";
 
-import { egressPerMonthMb, EGRESS_LIMIT_MB, evaluateHealth, mbPerYear, RUNS_PER_MONTH,
-         usedMbOf, worstLevel } from "./meridian-health.js";
+import { egressPerMonthMb, EGRESS_LIMIT_MB, evaluateHealth, mbPerYear,
+         PLACEHOLDER_FIX_DATE, RECURRING_SHORTFALL_NIGHTS, recurringSymbols,
+         RUNS_PER_MONTH, toleratedStreak, usedMbOf, worstLevel } from "./meridian-health.js";
 import { mergeRows, newestByClass, nextAppendName } from "./meridian-history.js";
 import { SNAPSHOT_TABLES } from "./meridian-schema.js";
 import { arrearsInstrumentDays, barsOf, deepRepullCap, medianNewestStored,
          restatementOf, SETTLEMENT_DAYS, tradingArrearsSince, unabsorbedEventDate,
          unsettledFrom } from "./meridian-detect.js";
 import { DEFAULT_DB_WINDOW_DAYS, DEFAULT_RETENTION_DAYS, egressSuffix, meterLine,
-         meteredFetch, newMeter, PAGE, parseEgress, parseTolerated, r4, readAll,
-         readAllChunked, readEgress, readEquityPrices, readPriceCache, recordEgress,
-         rPrice, toleratedSuffix, writePriceCache } from "./meridian-io.js";
+         failedSuffix, meteredFetch, newMeter, PAGE, parseEgress, parseFailed,
+         parseTolerated, r4, readAll, readAllChunked, readEgress, readEquityPrices,
+         readPriceCache, recordEgress, rPrice, toleratedSuffix,
+         writePriceCache } from "./meridian-io.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 
@@ -849,6 +851,111 @@ await check("daily_fetch tags only the nights that published", () => {
   const inserted = src.indexOf('from("fetch_job_log").insert');
   return decided > 0 && decided < inserted ? null
     : "the tolerance is decided after the job-log row is written";
+});
+
+// ---- which instruments missed, and whether it is the same ones every night (§11n) ----
+await check("the failed-symbol tag round-trips, and shares the field with the others", () => {
+  const msg = `swept 2238, +5132 bars, 2 re-pulled, 2 failed ${failedSuffix(["MONOLITH", "QLINE"])} `
+            + `${toleratedSuffix()}`;
+  const why = eq(parseFailed(msg), ["MONOLITH", "QLINE"], "symbols");
+  if (why) return why;
+  if (!parseTolerated(msg)) return "the tolerated tag stopped parsing once failed= was added";
+  if (parseFailed("swept 2238, +5132 bars, 0 re-pulled, 0 failed").length)
+    return "a message with no failures parsed as having some";
+  // Bounded, because a human reads this field in a table.
+  const many = failedSuffix(Array.from({ length: 25 }, (_, i) => `SYM${i}`));
+  const got = parseFailed(`x ${many}`);
+  if (got.length !== 10) return `capped at ${got.length}, want 10`;
+  return /\+15/.test(many) ? null : `the cap does not say how many it withheld: ${many}`;
+});
+
+// Two nights is a coincidence. Three is a shortfall that is not healing, and the whole
+// argument for tolerating one -- "tomorrow's sweep picks them up" -- is false by then.
+const sweep = (date, failed, tolerated = true) => ({
+  job_type: "daily", status: failed.length ? "failure" : "success", finished_at: `${date}T20:00:00Z`,
+  tolerated: failed.length ? tolerated : false, failed, egress: null,
+  message: `swept 2238, +5000 bars, 1 re-pulled, ${failed.length} failed`,
+});
+const pipelineRow = (date) => ({
+  job_type: "daily", status: "success", finished_at: `${date}T20:10:00Z`,
+  tolerated: false, failed: [], egress: { bytes: 137 * 1048576, requests: 3420 },
+  message: "pipeline fetch+compute+workbook+publish+prune",
+});
+
+await check("one tolerated night is a warning, as before", () => {
+  const f = evalWith({ jobs: [sweep("2026-10-06", ["MONOLITH"]), pipelineRow("2026-10-05"),
+                              sweep("2026-10-05", [])] });
+  const j = f.find((x) => x.code === "job-failed");
+  return j && j.level === "warning" ? null : `level ${j?.level}`;
+});
+
+await check("two is still a warning, and says how many nights", () => {
+  const f = evalWith({ jobs: [sweep("2026-10-06", ["MONOLITH"]), pipelineRow("2026-10-05"),
+                              sweep("2026-10-05", ["MONOLITH"]), pipelineRow("2026-10-02"),
+                              sweep("2026-10-02", [])] });
+  const j = f.find((x) => x.code === "job-failed");
+  if (!j || j.level !== "warning") return `level ${j?.level}`;
+  return /2 nights running/.test(j.message) ? null : `does not count the nights: ${j.message}`;
+});
+
+await check("three in a row is an error, and names the instrument", () => {
+  const f = evalWith({ jobs: [sweep("2026-10-06", ["MONOLITH", "QLINE"]), pipelineRow("2026-10-05"),
+                              sweep("2026-10-05", ["MONOLITH"]), pipelineRow("2026-10-02"),
+                              sweep("2026-10-02", ["MONOLITH", "DANISH"])] });
+  const j = f.find((x) => x.code === "job-failed");
+  if (!j || j.level !== "error") return `level ${j?.level}`;
+  if (!/MONOLITH/.test(j.message)) return `does not name the repeat offender: ${j.message}`;
+  // Only the instrument present on EVERY night of the streak is not healing.
+  if (/QLINE|DANISH/.test(j.message)) return `named a one-off as a repeat: ${j.message}`;
+  return /resolve_tickers|deactivate/.test(j.message) ? null : "no remedy named";
+});
+
+await check("a clean sweep in between breaks the streak", () => {
+  const f = evalWith({ jobs: [sweep("2026-10-06", ["MONOLITH"]), sweep("2026-10-05", []),
+                              sweep("2026-10-02", ["MONOLITH"]), sweep("2026-10-01", ["MONOLITH"])] });
+  const j = f.find((x) => x.code === "job-failed");
+  return j && j.level === "warning" ? null : `a healed night still escalated: ${j?.level}`;
+});
+
+// The pipeline-total row sits between two sweeps every night. Reading it as a good
+// night would make the streak unreachable, which is what the egress tag distinguishes.
+await check("the nightly pipeline row is not mistaken for a clean sweep", () => {
+  if (toleratedStreak([sweep("2026-10-06", ["A"]), pipelineRow("2026-10-05"),
+                       sweep("2026-10-05", ["A"]), pipelineRow("2026-10-02"),
+                       sweep("2026-10-02", ["A"])]) !== 3)
+    return "the interleaved pipeline rows broke the streak";
+  // And a different job type is not a daily sweep at all.
+  return toleratedStreak([{ job_type: "quarterly", status: "failure", tolerated: true,
+                            failed: [], egress: null }]) === 0 ? null
+    : "a quarterly job counted toward the daily streak";
+});
+
+await check("three different instruments each night is not a ticker problem", () => {
+  const f = evalWith({ jobs: [sweep("2026-10-06", ["A"]), sweep("2026-10-05", ["B"]),
+                              sweep("2026-10-02", ["C"])] });
+  const j = f.find((x) => x.code === "job-failed");
+  if (!j || j.level !== "error") return `level ${j?.level}`;
+  return /shared cause/.test(j.message) ? null
+    : `blamed a ticker for a shifting set: ${j.message}`;
+});
+
+// ---- stored holiday placeholder bars (§11m) ----
+await check("placeholders predating the fix are counted, not alarmed about", () => {
+  const f = evalWith({ placeholders: { count: 5834, newest: "2026-10-02" } });
+  return f.some((x) => x.code === "placeholders")
+    ? "historical residue raised a finding" : null;
+});
+
+await check("a placeholder written after the fix means the fix is not holding", () => {
+  const f = evalWith({ placeholders: { count: 5835, newest: "2026-10-09" } });
+  const p = f.find((x) => x.code === "placeholders");
+  if (!p || p.level !== "error") return `level ${p?.level ?? "no finding"}`;
+  return /not holding|2026-10-09/.test(p.message) ? null : p.message;
+});
+
+await check("an unmeasured placeholder count is not read as zero", () => {
+  const f = evalWith({ placeholders: null });
+  return f.some((x) => x.code === "placeholders") ? "null read as a problem" : null;
 });
 
 await check("capacity past the threshold is an error", () => {
