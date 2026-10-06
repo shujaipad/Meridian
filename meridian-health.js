@@ -26,9 +26,10 @@ export async function collectHealth(db, { tables = [] } = {}) {
     facts.rowCounts[t] = error ? { error: error.message } : { count: count ?? null };
   }
 
+  let universe = [];
   try {
     const { readAll } = await import("./meridian-io.js");
-    const universe = await readAll(db, "universe", "id,asset_class", { orderBy: ["id"] });
+    universe = await readAll(db, "universe", "id,asset_class", { orderBy: ["id"] });
     const tech = await readAll(db, "technicals_daily", "universe_id,as_of_date",
                                { orderBy: ["universe_id"] });
     const classOf = Object.fromEntries(universe.map((u) => [String(u.id), u.asset_class]));
@@ -77,25 +78,50 @@ export async function collectHealth(db, { tables = [] } = {}) {
   //
   // Equities only. Yahoo reports no volume for currency pairs at all, and indices and
   // commodities are mixed, so the same count across every class would be meaningless.
-  try {
-    const sel = "trade_date,universe!inner(asset_class)";
-    const { count, error: cErr } = await db.from("prices_daily")
-      .select(sel, { count: "exact", head: true })
-      .eq("universe.asset_class", "equity").is("volume", null);
-    if (cErr) throw new Error(cErr.message);
-    const { data: newest, error: nErr } = await db.from("prices_daily")
-      .select(sel).eq("universe.asset_class", "equity").is("volume", null)
-      .order("trade_date", { ascending: false }).limit(1);
-    if (nErr) throw new Error(nErr.message);
-    facts.placeholders = { count: count ?? 0, newest: newest?.[0]?.trade_date ?? null };
-  } catch (e) {
-    // Reported as unreadable, which is a warning. This is a new query against an
-    // embedded filter and it must not be able to fail a night on its own.
-    facts.errors.push(`placeholder bars: ${e.message.slice(0, 80)}`);
+  // EXCLUDE the non-equity classes rather than selecting the equity one, which is what
+  // makes this a plain filter instead of a join. The first attempt embedded
+  // `universe!inner(asset_class)` and filtered on it, and it failed in production with
+  // an EMPTY error message -- because `head: true` issues a HEAD request, a HEAD
+  // response carries no body, and PostgREST puts the reason in the body. The query
+  // blinded its own diagnostic. There are only ~100 non-equity instruments against
+  // ~2,138 equities, so `universe_id=not.in.(...)` is a short URL, needs no embed, and
+  // an error comes back with something written on it.
+  //
+  // One request, not two: `count: "exact"` with the newest row ordered first answers
+  // both halves at once.
+  const nonEquity = nonEquityIds(universe);
+  if (!universe.length) {
+    facts.errors.push("placeholder bars: the universe did not load, so equities "
+                    + "could not be told apart from currencies");
+  } else {
+    try {
+      let q = db.from("prices_daily").select("trade_date", { count: "exact" })
+                .is("volume", null);
+      // `not.in.()` with an empty list is not valid; with no non-equity rows there is
+      // also nothing to exclude.
+      if (nonEquity.length) q = q.not("universe_id", "in", `(${nonEquity.join(",")})`);
+      const { data, count, error } = await q
+        .order("trade_date", { ascending: false }).limit(1);
+      if (error) throw new Error(error.message || JSON.stringify(error).slice(0, 120));
+      facts.placeholders = { count: count ?? 0, newest: data?.[0]?.trade_date ?? null };
+    } catch (e) {
+      // Reported as unreadable, which is a warning. A measurement must not be able to
+      // fail a night on its own.
+      facts.errors.push(`placeholder bars: ${(e.message || String(e)).slice(0, 120)}`);
+    }
   }
 
   return facts;
 }
+
+/**
+ * The instruments to EXCLUDE from the placeholder count, which is every class but
+ * equity. Exported because it is the one part of that query with a decision in it: a
+ * currency pair legitimately reports no volume on every bar it has ever had, so
+ * counting one as a placeholder would bury the equity number under ~30,000 of them.
+ */
+export const nonEquityIds = (universe) =>
+  (universe ?? []).filter((u) => u.asset_class !== "equity").map((u) => u.id);
 
 export function usedMbOf(sizes) {
   if (!Array.isArray(sizes)) return null;

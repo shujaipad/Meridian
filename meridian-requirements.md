@@ -43,13 +43,13 @@ what each defect had in common. As of the first green end-to-end run:
 
 | | |
 |---|---|
-| Nightly pipeline | Green 2026-10-06 after six red nights; three defects fixed and verified in production (§11l), a fourth found while verifying them (§11m) |
+| Nightly pipeline | Green, and the EUR fix verified inside the window that broke it (§11o). Four defects fixed 2026-10-06 (§11l, §11m); a fifth — the git mirror stopping short of late-arriving bars — reported and open (§11o) |
 | Screens | All five asset classes, published same-day |
 | Workbook | Same day, same rows, same window as the screens (§11d) |
 | Database | ~208 MB of Supabase's 500 MB — ~42%, growing ~114 MB/year (2026-09-28) |
 | Retention | 1,100 days, pruned nightly, so the table is flat rather than growing |
 | Alerting | Built, verified, and **reaching nobody** — the two secrets have never been set, which is why §11l took a week to notice |
-| Checks | 114 pipeline self-checks, 65 browser checks, all negative-tested |
+| Checks | 116 pipeline self-checks, 65 browser checks, all negative-tested |
 
 The prototype this section used to describe — a single client-side artifact with
 user-uploaded CSVs and no automation — is still in the repository as `meridian.jsx`,
@@ -3499,6 +3499,104 @@ prevents: removing the egress discriminator breaks the streak on interleaved row
 disabling the escalation leaves three bad nights as a warning, swapping the intersection
 for a union names one-off instruments as repeat offenders, and dropping the fix-date
 guard makes historical residue raise a nightly error.
+
+---
+
+## 11o. The first night with the new instruments on, including one that blinded itself
+*(2026-10-06, 19:41 UTC)*
+
+The scheduled run started at **19:41 UTC — inside the 19:00–22:00 window** where Yahoo
+serves both a settled and a live bar for the same London date, and the fetch step
+completed clean. **§11l's first fix is now conclusively verified**, not merely
+circumstantially: that is the exact condition that killed four nights, met and survived.
+Every step green, all five classes current, 2,404 bars appended.
+
+### Two of today's instruments worked on their first night
+
+```
+part 2026-10-06 20:05  daily  swept 2238, +2404 bars, 0 re-pulled, 1 failed | failed=ASHIKA | published=tolerated
+^ the most recent run published with instruments missing; tomorrow retries them
+[warning] job-failed: ... 1 failed | failed=ASHIKA | published=tolerated (2 nights running)
+```
+
+The symbol is in the row (§11n), the streak counter reads **2 nights running**, the mark
+is `part` rather than `FAIL`, and the note beneath it no longer contradicts the health
+block two screens down. Exactly as designed, including the prediction that nothing would
+go red tonight.
+
+### The one that failed, and it failed by blinding its own diagnostic
+
+```
+integrity
+    placeholder bars: not measured (the count query did not run)
+health
+    [warning] unreadable: Could not read: placeholder bars:
+```
+
+**The reason is empty.** Not truncated — empty. `head: true` issues an HTTP HEAD request,
+a HEAD response carries no body by definition, and PostgREST writes the reason for a
+rejection *in the body*. The query asked for a count in the one way that guarantees any
+error about it arrives with nothing written on it.
+
+So the query is gone, and with it the embedded join it needed. Equities are now
+identified by **excluding** the other classes — `universe_id=not.in.(...)` over the ~100
+non-equity instruments against ~2,138 equities, a short URL, no relationship for
+PostgREST to infer, one request for both the count and the newest date, and an error
+that comes back legible. It degraded to a warning exactly as it was built to, which is
+the one part of this that went right: a new measurement could not fail a night.
+
+**The lesson is narrower than "test it first" and worth keeping**: a diagnostic that
+cannot report its own failure is worse than no diagnostic, because it consumes the slot
+where the answer should have been. Pinned by a source check — `head: true` in that block,
+an unguarded `e.message`, or a return to the embedded join each fail it.
+
+### A correction: ASHIKA *is* a persistent failure
+
+§11n concluded that nothing was persistently failing, on the evidence that the sets of
+priced equities on 2026-09-30, 10-01 and 10-05 are identical. The new tag named the
+instrument on its first night, and the conclusion does not survive it:
+
+| | |
+|---|---|
+| ASHIKA (Ashika Global Securities, `INE094B01013`) | **5 bars in the mirror, newest 2026-09-15** |
+| `ASHIKA.BO`, `ASHIKA.NS`, `543766.BO`, two name variants | **HTTP 404, every one** |
+
+Yahoo has stopped serving the instrument on every candidate form. It has failed every
+night since mid-September and will keep failing.
+
+**Why the mirror test missed it, stated properly.** §11n's caveat said the test could
+only see instruments with *price history*. The accurate caveat is instruments with
+*recent* price history: ASHIKA has five bars from mid-September, so it was absent from
+all three comparison sets and the "identical sets" test never looked at it. The sets
+being identical proves that nothing which was reporting on 09-30 stopped reporting — it
+says nothing at all about an instrument that had already stopped.
+
+The remedy is not a ticker. There is no working ticker. It is
+`update universe set status = ... where identifier = 'INE094B01013'`, a production row,
+so it is reported rather than done — and §11n's streak rule reaches its threshold on the
+**third tagged night**, which puts a red run on Thursday unless the instrument is
+deactivated first. That is the rule working as intended: a red that names one instrument,
+carries its remedy, and clears when the remedy is applied.
+
+### A fifth defect, found the same way: the mirror silently stops short
+
+Tonight's mirror step reported `+0 bars after 2026-10-06` for all five classes and
+committed nothing, despite the sweep having appended 2,404 rows.
+
+The per-class watermark is a **date**, and §11h's two mechanisms are "bars newer than the
+git copy" and "full history for deep re-pulled instruments". A bar that arrives late for a
+date the mirror has *already* passed falls between them. Concretely: the mirror holds
+**2,029** equity bars for 2026-10-06 and the database holds ~2,089 — the ~60 instruments
+that reported after the first run of the day are in the database and will never reach git.
+
+This is systematic, not an artifact of running twice today. An instrument whose bar for
+day D lands on day D+1 is upserted by the next sweep, and the next append then looks for
+bars *after* D and does not find it. Over months the mirror drifts quietly short of the
+database it exists to copy. Reported, not fixed: the fix is a watermark that remembers
+what it has written rather than how far it has got, and that is a change to §11h's
+design rather than a patch to it.
+
+Self-checks 114 → 116.
 
 ---
 

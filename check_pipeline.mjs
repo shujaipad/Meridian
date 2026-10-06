@@ -15,7 +15,7 @@
 import { readFileSync } from "node:fs";
 
 import { egressPerMonthMb, EGRESS_LIMIT_MB, evaluateHealth, mbPerYear,
-         PLACEHOLDER_FIX_DATE, RECURRING_SHORTFALL_NIGHTS, recurringSymbols,
+         nonEquityIds, PLACEHOLDER_FIX_DATE, RECURRING_SHORTFALL_NIGHTS, recurringSymbols,
          RUNS_PER_MONTH, toleratedStreak, usedMbOf, worstLevel } from "./meridian-health.js";
 import { mergeRows, newestByClass, nextAppendName } from "./meridian-history.js";
 import { SNAPSHOT_TABLES } from "./meridian-schema.js";
@@ -951,6 +951,35 @@ await check("a placeholder written after the fix means the fix is not holding", 
   const p = f.find((x) => x.code === "placeholders");
   if (!p || p.level !== "error") return `level ${p?.level ?? "no finding"}`;
   return /not holding|2026-10-09/.test(p.message) ? null : p.message;
+});
+
+// A currency pair reports no volume on every bar it has ever had, so counting one as a
+// placeholder would bury the equity number under ~30,000 of them.
+await check("only equities are counted as placeholder candidates", () => {
+  const u = [{ id: 1, asset_class: "equity" }, { id: 2, asset_class: "currency" },
+             { id: 3, asset_class: "index" }, { id: 4, asset_class: "equity" },
+             { id: 5, asset_class: "commodity" }, { id: 6, asset_class: "crypto" }];
+  const why = eq(nonEquityIds(u), [2, 3, 5, 6], "excluded ids");
+  if (why) return why;
+  if (nonEquityIds([]).length) return "an empty universe excluded something";
+  return nonEquityIds(null).length ? "a missing universe excluded something" : null;
+});
+
+// THE QUERY MUST NOT BLIND ITS OWN DIAGNOSTIC. The first version used `head: true` and
+// failed in production reporting an EMPTY reason: a HEAD response carries no body and
+// PostgREST writes the reason in the body (§11o).
+await check("the placeholder count can report why it failed", () => {
+  const src = readFileSync(new URL("./meridian-health.js", import.meta.url), "utf8");
+  const block = src.slice(src.indexOf("const nonEquity = "), src.indexOf("return facts"));
+  if (!block) return "the placeholder block moved and this check is no longer looking at it";
+  if (/head:\s*true/.test(block))
+    return "head: true — a HEAD response has no body, so a PostgREST error arrives empty";
+  if (!/e\.message \|\| String\(e\)/.test(block))
+    return "an empty error message would still be printed as nothing";
+  if (/universe!inner/.test(block))
+    return "back to an embedded join; the point of not.in was to need no relationship";
+  return /\.not\("universe_id", "in"/.test(block) ? null
+    : "the non-equity classes are no longer excluded by id";
 });
 
 await check("an unmeasured placeholder count is not read as zero", () => {
