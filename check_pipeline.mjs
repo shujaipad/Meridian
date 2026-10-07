@@ -930,6 +930,41 @@ await check("the nightly pipeline row is not mistaken for a clean sweep", () => 
     : "a quarterly job counted toward the daily streak";
 });
 
+// THE 2026-10-07 SHAPE (§11p). The streak's oldest row predated the `failed=` tag, so
+// its symbol list was empty, the intersection collapsed, and the finding announced "a
+// different set each night" while ASHIKA sat in the other two rows AND in the message it
+// was printing. A finding may say it cannot tell; it may not guess and sound certain.
+await check("a night that recorded no symbols does not read as a different set", () => {
+  const untagged = { ...sweep("2026-10-05", ["x"]), failed: [] };   // pre-tag row
+  const f = evalWith({ jobs: [sweep("2026-10-07", ["ASHIKA"]), pipelineRow("2026-10-06"),
+                              sweep("2026-10-06", ["ASHIKA"]), untagged] });
+  const j = f.find((x) => x.code === "job-failed");
+  if (!j || j.level !== "error") return `level ${j?.level}`;
+  if (/different set each night/.test(j.message))
+    return `claimed a different set while naming one: ${j.message}`;
+  if (!/ASHIKA/.test(j.message)) return `did not name the instrument it could see: ${j.message}`;
+  return /all 2 night\(s\) that recorded symbols/.test(j.message) ? null
+    : `does not say how many nights it could see: ${j.message}`;
+});
+
+await check("a streak with no symbols anywhere says so rather than guessing", () => {
+  const bare = (d) => ({ ...sweep(d, ["x"]), failed: [] });
+  const f = evalWith({ jobs: [bare("2026-10-07"), bare("2026-10-06"), bare("2026-10-05")] });
+  const j = f.find((x) => x.code === "job-failed");
+  if (!j || j.level !== "error") return `level ${j?.level}`;
+  if (/different set each night/.test(j.message)) return "guessed at a set it never saw";
+  return /No night recorded which instruments/.test(j.message) ? null : j.message;
+});
+
+// And when some nights are blind but the ones that saw share nothing, say both.
+await check("partly-blind streaks do not rule out a stuck instrument", () => {
+  const f = evalWith({ jobs: [sweep("2026-10-07", ["A"]), sweep("2026-10-06", ["B"]),
+                              { ...sweep("2026-10-05", ["x"]), failed: [] }] });
+  const j = f.find((x) => x.code === "job-failed");
+  if (!j) return "no finding";
+  return /not ruled out/.test(j.message) ? null : `overclaimed: ${j.message}`;
+});
+
 await check("three different instruments each night is not a ticker problem", () => {
   const f = evalWith({ jobs: [sweep("2026-10-06", ["A"]), sweep("2026-10-05", ["B"]),
                               sweep("2026-10-02", ["C"])] });

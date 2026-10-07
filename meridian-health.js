@@ -218,14 +218,24 @@ export function evaluateHealth(facts, {
     const stuck = streak >= RECURRING_SHORTFALL_NIGHTS;
     const tolerated = Boolean(last.tolerated);
     if (tolerated && stuck) {
-      const repeats = recurringSymbols(facts.jobs, streak);
+      const { symbols, recorded, nights } = recurringSymbols(facts.jobs, streak);
+      const blind = nights - recorded;
+      let verdict;
+      if (symbols.length) {
+        verdict = `Failing on all ${recorded} night(s) that recorded symbols: ${symbols.join(", ")}. `
+                + "Re-resolve the ticker (resolve_tickers.mjs) or deactivate the instrument.";
+      } else if (!recorded) {
+        verdict = "No night recorded which instruments missed, so the symbols are only in each "
+                + "run's fetch-step log.";
+      } else if (!blind) {
+        verdict = "A different set each night, so look for a shared cause rather than a ticker.";
+      } else {
+        verdict = `No instrument failed on all ${recorded} night(s) that recorded symbols, but `
+                + `${blind} recorded none, so a single stuck instrument is not ruled out.`;
+      }
       add("error", "job-failed",
           `${streak} sweeps in a row have published with instruments missing, so they are `
-          + `not healing: ${last.message ?? "no message"}. `
-          + (repeats.length
-              ? `Failing every one of those nights: ${repeats.join(", ")}. `
-                + "Re-resolve the ticker (resolve_tickers.mjs) or deactivate the instrument."
-              : "A different set each night, so look for a shared cause rather than a ticker."));
+          + `not healing: ${last.message ?? "no message"}. ${verdict}`);
     } else {
       add(tolerated ? "warning" : "error", "job-failed",
           `The most recent ${last.job_type} run ${tolerated ? "published with instruments missing" : "did not succeed"}: `
@@ -319,16 +329,27 @@ export function toleratedStreak(jobs) {
   return n;
 }
 
-/** The instruments that failed in EVERY night of the streak — the ones not healing. */
+/**
+ * The instruments that failed in EVERY night of the streak — the ones not healing.
+ *
+ * Intersected over the rows that actually RECORDED symbols, and `recorded` says how
+ * many that was, because "no symbols in common" and "no symbols written down" are
+ * different facts and the first version returned the same empty array for both. On
+ * 2026-10-07 the streak's oldest row predated the `failed=` tag, so the intersection
+ * collapsed to nothing and the finding announced "a different set each night" while
+ * ASHIKA sat in the other two rows and in the message it was printing (§11p). A
+ * finding may say it cannot tell; it may not guess and sound certain.
+ */
 export function recurringSymbols(jobs, streak) {
   const rows = dailySweeps(jobs).slice(0, streak);
-  if (!rows.length) return [];
-  let common = new Set(rows[0].failed ?? []);
-  for (const r of rows.slice(1)) {
-    const here = new Set(r.failed ?? []);
+  const withSymbols = rows.filter((r) => (r.failed ?? []).length > 0);
+  if (!withSymbols.length) return { symbols: [], recorded: 0, nights: rows.length };
+  let common = new Set(withSymbols[0].failed);
+  for (const r of withSymbols.slice(1)) {
+    const here = new Set(r.failed);
     common = new Set([...common].filter((x) => here.has(x)));
   }
-  return [...common].sort();
+  return { symbols: [...common].sort(), recorded: withSymbols.length, nights: rows.length };
 }
 
 /** The day the placeholder-bar drop shipped (§11m). Nothing newer should be one. */

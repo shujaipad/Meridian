@@ -43,13 +43,13 @@ what each defect had in common. As of the first green end-to-end run:
 
 | | |
 |---|---|
-| Nightly pipeline | Green, and the EUR fix verified inside the window that broke it (§11o). Four defects fixed 2026-10-06 (§11l, §11m); a fifth — the git mirror stopping short of late-arriving bars — reported and open (§11o) |
+| Nightly pipeline | Publishing nightly. Red since 2026-10-07 **by design**: ASHIKA has failed three sweeps running and needs deactivating (§11o, §11p). Mirror still stops short of late-arriving bars (§11o, open) |
 | Screens | All five asset classes, published same-day |
 | Workbook | Same day, same rows, same window as the screens (§11d) |
 | Database | ~208 MB of Supabase's 500 MB — ~42%, growing ~114 MB/year (2026-09-28) |
 | Retention | 1,100 days, pruned nightly, so the table is flat rather than growing |
 | Alerting | Built, verified, and **reaching nobody** — the two secrets have never been set, which is why §11l took a week to notice |
-| Checks | 116 pipeline self-checks, 65 browser checks, all negative-tested |
+| Checks | 119 pipeline self-checks, 65 browser checks, all negative-tested |
 
 The prototype this section used to describe — a single client-side artifact with
 user-uploaded CSVs and no automation — is still in the repository as `meridian.jsx`,
@@ -3597,6 +3597,113 @@ what it has written rather than how far it has got, and that is a change to §11
 design rather than a patch to it.
 
 Self-checks 114 → 116.
+
+---
+
+## 11p. The number, the red run that was meant to happen, and a finding that guessed
+*(2026-10-07)*
+
+### The placeholder count, finally measured
+
+```
+integrity
+    7,492 equity bars have no volume and no range — holiday placeholders, newest 2026-10-05, all predating the fix
+```
+
+**7,492**, against the 5,784 the git mirror held. §11n warned the mirror was a skewed
+sample because deep re-pulls carry full retained history; it was skewed by about 29% —
+in the direction predicted, by more than guessed. The `not.in` rewrite works, and
+`newest 2026-10-05` is before the 2026-10-06 fix date, so no finding is raised: the drop
+is holding. That is the input the delete-or-wait decision was missing.
+
+(2026-10-05 is a trading day, not a holiday. Those are halted or untraded instruments —
+the case §11m said the same rule covers, because a day with no trades has no price to
+record whether or not the exchange was open.)
+
+### The red run was the point
+
+The streak rule escalated on its third night exactly as designed. Everything published
+first — fetch, screens, workbook, mirror, prune — and then the capacity check failed:
+
+```
+[error] job-failed: 3 sweeps in a row have published with instruments missing, so they
+are not healing: swept 2238, +4472 bars, 1 re-pulled, 1 failed | failed=ASHIKA | published=tolerated
+```
+
+A red run that names one instrument, carries its remedy, and clears when the remedy is
+applied. ASHIKA is dead on every candidate ticker (§11o) and the fix is one row in
+`universe`. Until then every night is red, which is the rule working rather than failing.
+
+### And a finding that guessed, which is worse than one that fails
+
+The same message ended:
+
+> *A different set each night, so look for a shared cause rather than a ticker.*
+
+**While printing `failed=ASHIKA`.** Two sentences apart, in the same finding, pointing
+the reader away from the instrument it had just named.
+
+The streak's three sweep rows were 10-07, 10-06 20:05 and 10-06 10:38 — and the last of
+those ran on `6080b9e`, *before* the `failed=` tag existed. Its symbol list was therefore
+empty, the intersection with an empty set is empty, and `recurringSymbols` returned the
+same empty array it returns when the sets genuinely do not overlap. The message then
+asserted the second meaning.
+
+**"No symbols in common" and "no symbols written down" are different facts, and the code
+returned one value for both.** It now intersects only over the rows that recorded
+symbols and reports how many that was, so the finding has four things it can say:
+
+| | |
+|---|---|
+| an instrument on every night that recorded symbols | name it, point at `resolve_tickers.mjs` or deactivation |
+| no night recorded any | say so — the symbols are only in each fetch step's log |
+| every night recorded, nothing shared | a different set each night; look for a shared cause |
+| some nights blind, the rest share nothing | *a single stuck instrument is not ruled out* |
+
+Last night's real data falls in the first row: two of the three nights recorded ASHIKA,
+so the finding now names it and says it saw two nights. The general lesson is the one
+§11o already paid for once in a different costume — **a diagnostic may say it cannot
+tell; it may not guess and sound certain.** That one reported an empty reason; this one
+reported a confident wrong one, which is worse, because an empty reason at least looks
+like a bug.
+
+Negative-tested by reverting to the shipped behaviour: all three new checks reproduce the
+exact sentence production printed.
+
+### 2026-10-07 has no equity close, and dropping it is right
+
+Only **6** of 2,089 equities got a 2026-10-07 bar, while all four other classes got full
+counts. Not a holiday — Reliance traded 11.9M shares. Yahoo is serving the 10-07 NSE bar
+with a real high, low and volume and **`close: null`**, and `adjclose` is null too:
+
+```
+RELIANCE.NS  2026-10-06  close=1218  adjclose=1218  vol=18003127
+RELIANCE.NS  2026-10-07  close=null  adjclose=null  vol=11878971
+```
+
+There is no close to store. `barsOf` dropping the bar is the pre-existing gap rule doing
+its job — "a gap, never a fabricated bar" — and it self-heals: nothing is stored for
+10-07, so the next sweep upserts it the moment Yahoo publishes. The screens honestly read
+one day behind for equities while the other four classes are current, a 1-day skew that
+sits under the `class-skew` threshold, correctly.
+
+Worth recording because the shape invites the wrong fix. A bar with a real high, low and
+volume looks like a bar we are throwing away, and the obvious patch — fall back to
+`adjclose` — was checked before being written and `adjclose` is null in exactly the same
+rows.
+
+### Two incidental confirmations
+
+**The EUR collision is a nightly event, not a one-off.** At 22:50 UTC `EURUSD=X` returns
+**two bars both dated 2026-10-07** — the settled 1.12535 and a live 1.12045. §11l's fix
+is load-bearing every evening the job runs late, which is every evening.
+
+**The holiday placeholder arrives with volume `0`, not null.** Live, `RELIANCE.NS` on
+2026-10-02 reads `close=1167.70, vol=0` — the same close as 10-01. The rule tests
+`!q.volume?.[i]`, which catches `0` as well as `null`; the stored rows show null because
+the writer maps `0` to null. Had the test been `=== null` it would have caught nothing.
+
+Self-checks 116 → 119.
 
 ---
 
