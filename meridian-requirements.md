@@ -43,7 +43,7 @@ what each defect had in common. As of the first green end-to-end run:
 
 | | |
 |---|---|
-| Nightly pipeline | Publishing nightly. Red since 2026-10-07 **by design**: ASHIKA has failed three sweeps running and needs deactivating (§11o, §11p). Mirror still stops short of late-arriving bars (§11o, open) |
+| Nightly pipeline | Publishing every trading day. ASHIKA dropped 2026-10-28, so the streak clears (§11q). Open: the git mirror has stopped taking equities (~27k bars, §11q), the egress gauge is pinned red by one outlier night, and the placeholder count times out |
 | Screens | All five asset classes, published same-day |
 | Workbook | Same day, same rows, same window as the screens (§11d) |
 | Database | ~208 MB of Supabase's 500 MB — ~42%, growing ~114 MB/year (2026-09-28) |
@@ -3704,6 +3704,103 @@ is load-bearing every evening the job runs late, which is every evening.
 the writer maps `0` to null. Had the test been `=== null` it would have caught nothing.
 
 Self-checks 116 → 119.
+
+---
+
+## 11q. Health check, 2026-10-28 — and ASHIKA dropped
+*(2026-10-28)*
+
+Eleven days on. The product is fine: screens and workbook published every trading day,
+all five classes current, database 210.8 MB of 500 (42.2%) tracking to a ~2029 ceiling.
+The 2026-10-19 Ubuntu 26 runner migration — flagged as the one item with a deadline —
+**passed without incident**: seven nightly runs since have built and verified the
+workbook. Pinning the runner is now a precaution rather than a deadline.
+
+Three things are not fine, and only one of them is what the alarm says it is.
+
+### The watchdog has been red for a week over a single night
+
+```
+[error] egress-over: 262 MB per run x 22 runs = ~5.62 GB/month of 5 GB (112%)
+```
+
+Actual steady state is **137 MB a run — 59%**, and has been every night but one:
+
+```
+egress, recent runs
+  2026-10-26   137 MB     2026-10-21   137 MB
+  2026-10-23   137 MB     2026-10-20   262 MB   <-- the only one
+  2026-10-22   137 MB     2026-10-19   137 MB
+```
+
+What happened on 2026-10-20, from that run's own meter:
+
+```
+  compute      132.3 MB down in 1,129 requests
+  workbook     124.7 MB down in 1,041 requests     <-- normally 0.0 MB in 1 request
+  TOTAL        261.7 MB
+```
+
+The workbook re-read the whole 800-day window from the database instead of taking
+compute's cache — **§11g's original 118% failure mode, for exactly one night.** The
+cache is validated and refused when the database disagrees with it, so this may well be
+the safety behaviour working rather than breaking; what is not known is what disagreed.
+
+**The gauge, though, is the thing to look at.** §11g chose the *worst* recent run to set
+the projection, deliberately, so a bad night could not be averaged away. It has no decay:
+one outlier pins the error for as long as it stays inside the ~6-run window, which here
+is over a week of red on a quota that is at 59%. A gauge that cannot tell "this happens
+every night" from "this happened once, eight days ago" is reporting the wrong thing, and
+the cost is the same cry-wolf failure §11l was about — a red that is permanently on is
+not a signal. Worth a rule that distinguishes a recurring overage from a single spike;
+not changed here, because the health check was the ask.
+
+### The placeholder count has stopped working
+
+```
+[warning] unreadable: Could not read: placeholder bars: canceling statement due to statement timeout
+```
+
+The `not.in` count from §11n returned 7,492 on 2026-10-07 and 7,347 on 2026-10-16, and
+now times out. Warning-level by design, so it cannot fail a night — but the integrity
+number it exists to produce is no longer being produced. (Last good reading, 2026-10-20:
+**7,327, newest 2026-10-05** — so the placeholder drop has held for 22 days.)
+
+### The mirror has effectively stopped taking equities
+
+§11o's gap, measured again and far worse:
+
+```
+2026-10-16  1,254     2026-10-22   37     2026-10-26    8
+2026-10-19     51     2026-10-23   22     2026-10-27    6
+2026-10-21     46
+```
+
+**~27,305 equity bars missing since 2026-10-07**, against ~2,089 expected a day, and the
+daily intake is now single digits. The database self-heals by backfilling on later
+nights; the mirror's date watermark has already moved past those dates and cannot. The
+independent copy §11h exists to provide has not meaningfully existed for equities for
+three weeks.
+
+### ASHIKA, dropped
+
+Authorised conditionally — *"you can drop Ashika if it is isolated"* — so isolation was
+checked rather than assumed:
+
+- `ASHIKA.BO`, `ASHIKA.NS` and `543766.BO` all return **HTTP 404**, 22 days after it went
+  dark and unchanged from §11o's reading
+- every recorded night reports exactly **`1 failed`** — no second instrument comes and goes
+- the §11n intersection over six nights names **only** ASHIKA
+
+Dropped by removing its row from `meridian-yahoo-tickers.csv`, which is the honest
+statement of the fact: there is no Yahoo ticker for this instrument. `yahooTickerFor`
+then returns null, the sweep skips it with the other 48 unmapped equities and never
+counts it as a failure, and the tolerated-shortfall streak clears on the next run. The
+20%-unmapped guard is nowhere near (49 of 2,138, 2.3%).
+
+Chosen over `update universe set status = ...` because it needs no production write, is
+reversible in a commit, and is self-consistent: a future `resolve_tickers.mjs` run tries
+all four candidates, gets four 404s, and leaves it out again.
 
 ---
 
