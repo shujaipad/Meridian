@@ -26,6 +26,7 @@ on:
           - reload-and-republish  # both, in order
           - prune                 # drop price history past the retention window
           - invite                # create accounts for invited users (no email sent)
+          - backfill-mirror       # re-mirror a wide window into history/appends
       since:
         description: "Earliest bar to load (YYYY-MM-DD). Ignored unless reloading."
         type: string
@@ -36,6 +37,11 @@ on:
         type: string
         required: false
         default: ""
+      window:
+        description: "Days back to re-mirror. Only used by 'backfill-mirror'."
+        type: string
+        required: false
+        default: "40"
 
 # Never let two of these overlap, and never let one cancel another mid-write.
 concurrency:
@@ -46,6 +52,13 @@ jobs:
   maintenance:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # Only backfill-mirror writes to the repository, and only ever under
+    # history/appends -- but the permission is per job, so every task in this workflow
+    # carries it. That is the cost of putting the backfill here rather than in a
+    # workflow of its own; the commit step below is the same one the nightly uses and
+    # stages that one directory by name.
+    permissions:
+      contents: write
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -103,6 +116,37 @@ jobs:
       - name: Prune price history past the retention window
         if: ${{ inputs.task == 'prune' }}
         run: node prune_prices.mjs
+
+      # THE MIRROR BACKFILL. The nightly already re-examines a trailing window and
+      # emits whatever the mirror never received (§11r); this is the same code with the
+      # window opened wide enough to reach days that fell out of it before the fix
+      # shipped. Nothing special happens here — which is the point, because a
+      # one-off script written for a one-off problem is a script nobody has run twice.
+      - name: Backfill the git price mirror
+        if: ${{ inputs.task == 'backfill-mirror' }}
+        env:
+          MIRROR_WINDOW_DAYS: ${{ inputs.window }}
+        run: node --max-old-space-size=4096 append_history.mjs
+
+      - name: Commit the backfill
+        if: ${{ inputs.task == 'backfill-mirror' }}
+        run: |
+          set -e
+          git config user.name  "meridian-maintenance"
+          git config user.email "noreply@github.com"
+          git add history/appends
+          if git diff --cached --quiet; then
+            echo "the mirror was already complete over that window"
+            exit 0
+          fi
+          git commit -m "Backfill the price mirror (${{ inputs.window }}-day window)"
+          for i in 1 2 3 4; do
+            git pull --rebase --autostash origin main && git push origin HEAD:main && exit 0
+            echo "push attempt $i failed; retrying"
+            sleep $((2 ** i))
+          done
+          echo "::error::could not push the mirror backfill after 4 attempts"
+          exit 1
 
       - name: Report — after
         if: ${{ always() && inputs.task != 'report' }}

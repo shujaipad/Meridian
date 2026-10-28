@@ -45,3 +45,74 @@ export function nextAppendName(date, exists) {
   if (!exists(`${date}.csv`)) return `${date}.csv`;
   for (let n = 2; ; n++) if (!exists(`${date}.${n}.csv`)) return `${date}.${n}.csv`;
 }
+
+// ---------------------------------------------------------------- reading the files
+/**
+ * These two walk a CSV as TEXT, never as parsed rows. The equity base files hold 2.1
+ * million bars between them and readCSV would build an object per bar — several
+ * hundred megabytes of garbage to answer a question that is one string comparison per
+ * line. They live here rather than inside append_history.mjs so they can be tested
+ * without a database, which is the same reason barsOf moved (§11l).
+ *
+ * Field positions differ by file and are passed in: the base files are
+ * `ISIN,Date,...` and `Symbol,Date,...` (key 0, date 1), the appends are
+ * `AssetClass,Key,Date,...` (key 1, date 2).
+ */
+function eachLine(text, fn) {
+  let from = text.indexOf("\n") + 1;                        // skip the header
+  while (from > 0 && from < text.length) {
+    const end = text.indexOf("\n", from);
+    const line = text.slice(from, end === -1 ? text.length : end);
+    if (line) fn(line);
+    if (end === -1) break;
+    from = end + 1;
+  }
+}
+
+/** The i-th comma-separated field, without splitting the whole line. */
+function field(line, i) {
+  let start = 0;
+  for (let n = 0; n < i; n++) {
+    const c = line.indexOf(",", start);
+    if (c === -1) return "";
+    start = c + 1;
+  }
+  const end = line.indexOf(",", start);
+  return line.slice(start, end === -1 ? line.length : end);
+}
+
+/** The newest date in a CSV, by string comparison on ISO dates. */
+export function maxDateIn(text, dateField) {
+  let max = "";
+  eachLine(text, (line) => {
+    const d = field(line, dateField);
+    if (d > max) max = d;
+  });
+  return max;
+}
+
+/**
+ * The `Key|Date` of every bar in a CSV dated on or after `since`, as a Set.
+ *
+ * This is what makes the mirror able to notice a bar it never received. A date
+ * watermark can only ask "is this newer than the furthest I have got", which is the
+ * wrong question when a bar arrives late for a day already passed — and that question
+ * cost the mirror ~27,000 equity bars over three weeks (§11r).
+ *
+ * The date is checked before the key is extracted, so the 2.1 million bars outside the
+ * window cost one comparison and no allocation.
+ */
+export function heldKeys(text, { keyField, dateField, since, into = new Set() } = {}) {
+  eachLine(text, (line) => {
+    const d = field(line, dateField);
+    if (d < since) return;
+    into.add(`${field(line, keyField)}|${d}`);
+  });
+  return into;
+}
+
+/** `days` before `today`, as an ISO date. Pure so the window is testable. */
+export function windowStart(today, days) {
+  const t = Date.parse(`${today}T00:00:00Z`);
+  return new Date(t - days * 86400_000).toISOString().slice(0, 10);
+}

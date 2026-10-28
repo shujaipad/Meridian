@@ -15,9 +15,11 @@
 import { readFileSync } from "node:fs";
 
 import { egressPerMonthMb, EGRESS_LIMIT_MB, evaluateHealth, mbPerYear,
-         nonEquityIds, PLACEHOLDER_FIX_DATE, RECURRING_SHORTFALL_NIGHTS, recurringSymbols,
+         equityIds, PLACEHOLDER_CHUNK, PLACEHOLDER_FIX_DATE, RECURRING_SHORTFALL_NIGHTS,
+         recurringSymbols,
          RUNS_PER_MONTH, toleratedStreak, usedMbOf, worstLevel } from "./meridian-health.js";
-import { mergeRows, newestByClass, nextAppendName } from "./meridian-history.js";
+import { heldKeys, maxDateIn, mergeRows, newestByClass, nextAppendName,
+         windowStart } from "./meridian-history.js";
 import { SNAPSHOT_TABLES } from "./meridian-schema.js";
 import { arrearsInstrumentDays, barsOf, deepRepullCap, medianNewestStored,
          restatementOf, SETTLEMENT_DAYS, tradingArrearsSince, unabsorbedEventDate,
@@ -692,6 +694,85 @@ await check("append filenames are immutable — a second run takes a suffix", ()
   return eq(nextAppendName("2026-09-18", (f) => have.has(f)), "2026-09-18.csv", "a fresh day");
 });
 
+// ------------------------------------------------- the mirror's trailing window (§11r)
+console.log("\nmirror window");
+
+// The append layout: AssetClass,Key,Date,High,Low,Close,Volume -- key 1, date 2.
+const APPEND = "AssetClass,Key,Date,High,Low,Close,Volume\n"
+  + "equity,INE001,2026-10-05,1,1,1,10\n"
+  + "equity,INE002,2026-10-05,2,2,2,20\n"
+  + "equity,INE001,2026-10-06,3,3,3,30\n";
+// A base layout: ISIN,Date,High,Low,Close,Volume -- key 0, date 1.
+const BASE = "ISIN,Date,High,Low,Close,Volume\n"
+  + "INE001,2026-09-30,9,9,9,90\n"
+  + "INE003,2026-10-06,8,8,8,80\n";
+
+await check("the window holds every key inside it and nothing outside", () => {
+  const held = heldKeys(APPEND, { keyField: 1, dateField: 2, since: "2026-10-06" });
+  return eq([...held].sort(), ["INE001|2026-10-06"], "held");
+});
+
+await check("both file layouts fold into one set", () => {
+  const held = heldKeys(APPEND, { keyField: 1, dateField: 2, since: "2026-10-01" });
+  heldKeys(BASE, { keyField: 0, dateField: 1, since: "2026-10-01", into: held });
+  return eq([...held].sort(),
+    ["INE001|2026-10-05", "INE001|2026-10-06", "INE002|2026-10-05", "INE003|2026-10-06"], "held");
+});
+
+// The point of the whole change: a bar that arrives for a date the mirror has already
+// passed is NOT in the held set, so it gets emitted. A date watermark could not see it.
+await check("a bar late for an already-mirrored date is not held", () => {
+  const held = heldKeys(APPEND, { keyField: 1, dateField: 2, since: "2026-10-01" });
+  if (held.has("INE002|2026-10-06")) return "a bar never written reads as already held";
+  return held.has("INE001|2026-10-06") ? null : "a bar that WAS written reads as missing";
+});
+
+await check("the header is never mistaken for a bar", () => {
+  const held = heldKeys(APPEND, { keyField: 1, dateField: 2, since: "0000-00-00" });
+  return [...held].some((k) => k.startsWith("Key|")) ? "the header row was held" : null;
+});
+
+await check("a file with only a header holds nothing", () =>
+  heldKeys("AssetClass,Key,Date\n", { keyField: 1, dateField: 2, since: "2000-01-01" }).size
+    ? "an empty file held something" : null);
+
+await check("maxDateIn reads the newest date, not the last line", () =>
+  eq(maxDateIn(APPEND, 2), "2026-10-06", "newest"));
+
+await check("maxDateIn on an empty file is the empty string, not undefined", () =>
+  eq(maxDateIn("ISIN,Date\n", 1), "", "newest"));
+
+await check("the window start counts back in whole days", () => {
+  if (windowStart("2026-10-28", 10) !== "2026-10-18") return windowStart("2026-10-28", 10);
+  // and across a month boundary
+  return windowStart("2026-11-02", 10) === "2026-10-23" ? null : windowStart("2026-11-02", 10);
+});
+
+// A class that has fallen a long way behind must still be caught up in full, which is
+// what the watermark did before and must keep doing: the read starts at whichever of
+// the two is EARLIER.
+await check("a class behind the window is read from its own watermark", () => {
+  const from = windowStart("2026-10-28", 10);               // 2026-10-18
+  const behind = "2026-09-04", current = "2026-10-27";
+  const readFrom = (since) => (since < from ? since : from);
+  if (readFrom(behind) !== behind) return `a class at ${behind} would be read from ${readFrom(behind)}`;
+  return readFrom(current) === from ? null
+    : `a current class would be read from ${readFrom(current)}, not the window start`;
+});
+
+// Asserted against the source, because append_history.mjs needs a database to run.
+await check("append_history diffs on key and date, not on a date watermark alone", () => {
+  const src = readFileSync(new URL("./append_history.mjs", import.meta.url), "utf8");
+  if (!/heldSince\(/.test(src)) return "nothing builds the set of bars already mirrored";
+  if (!/held\.has\(`\$\{keyOf\(u\)\}\|\$\{r\.trade_date\}`\)/.test(src))
+    return "the read does not skip bars the mirror already holds";
+  if (/filter: \(q\) => q\.gt\("trade_date", since\)/.test(src))
+    return "still reading strictly after the watermark — that is the bug (§11r)";
+  // Corrections must NOT be filtered by `held`: they exist to overwrite what is held.
+  const corr = src.slice(src.indexOf("Corrections FIRST"), src.indexOf("TWO QUESTIONS"));
+  return /held\.has/.test(corr) ? "the corrections pass is suppressed by `held`" : null;
+});
+
 // ---------------------------------------------------------------- partial failures
 console.log("\npartial fetch failures");
 
@@ -976,13 +1057,13 @@ await check("three different instruments each night is not a ticker problem", ()
 
 // ---- stored holiday placeholder bars (§11m) ----
 await check("placeholders predating the fix are counted, not alarmed about", () => {
-  const f = evalWith({ placeholders: { count: 5834, newest: "2026-10-02" } });
+  const f = evalWith({ placeholders: { count: 5834, sinceFix: null } });
   return f.some((x) => x.code === "placeholders")
     ? "historical residue raised a finding" : null;
 });
 
 await check("a placeholder written after the fix means the fix is not holding", () => {
-  const f = evalWith({ placeholders: { count: 5835, newest: "2026-10-09" } });
+  const f = evalWith({ placeholders: { count: 5835, sinceFix: "2026-10-09" } });
   const p = f.find((x) => x.code === "placeholders");
   if (!p || p.level !== "error") return `level ${p?.level ?? "no finding"}`;
   return /not holding|2026-10-09/.test(p.message) ? null : p.message;
@@ -994,10 +1075,10 @@ await check("only equities are counted as placeholder candidates", () => {
   const u = [{ id: 1, asset_class: "equity" }, { id: 2, asset_class: "currency" },
              { id: 3, asset_class: "index" }, { id: 4, asset_class: "equity" },
              { id: 5, asset_class: "commodity" }, { id: 6, asset_class: "crypto" }];
-  const why = eq(nonEquityIds(u), [2, 3, 5, 6], "excluded ids");
+  const why = eq(equityIds(u), [1, 4], "counted ids");
   if (why) return why;
-  if (nonEquityIds([]).length) return "an empty universe excluded something";
-  return nonEquityIds(null).length ? "a missing universe excluded something" : null;
+  if (equityIds([]).length) return "an empty universe counted something";
+  return equityIds(null).length ? "a missing universe counted something" : null;
 });
 
 // THE QUERY MUST NOT BLIND ITS OWN DIAGNOSTIC. The first version used `head: true` and
@@ -1005,16 +1086,36 @@ await check("only equities are counted as placeholder candidates", () => {
 // PostgREST writes the reason in the body (§11o).
 await check("the placeholder count can report why it failed", () => {
   const src = readFileSync(new URL("./meridian-health.js", import.meta.url), "utf8");
-  const block = src.slice(src.indexOf("const nonEquity = "), src.indexOf("return facts"));
+  const block = src.slice(src.indexOf("const equity = equityIds("), src.indexOf("return facts"));
   if (!block) return "the placeholder block moved and this check is no longer looking at it";
   if (/head:\s*true/.test(block))
     return "head: true — a HEAD response has no body, so a PostgREST error arrives empty";
   if (!/e\.message \|\| String\(e\)/.test(block))
     return "an empty error message would still be printed as nothing";
-  if (/universe!inner/.test(block))
-    return "back to an embedded join; the point of not.in was to need no relationship";
-  return /\.not\("universe_id", "in"/.test(block) ? null
-    : "the non-equity classes are no longer excluded by id";
+  if (/universe!inner/.test(block)) return "back to an embedded join";
+  return null;
+});
+
+// AND IT MUST STAY ON THE INDEX. The only index on prices_daily is the unique btree on
+// (universe_id, trade_date); nothing indexes volume. `not.in` over the non-equity ids
+// made every statement a sequential scan of 1.4M rows and it timed out in production
+// after working twice (§11r). `in` over a chunk of equity ids is an index range scan.
+await check("the placeholder count asks in the shape the index can answer", () => {
+  const src = readFileSync(new URL("./meridian-health.js", import.meta.url), "utf8");
+  const block = src.slice(src.indexOf("const equity = equityIds("), src.indexOf("return facts"));
+  if (/\.not\("universe_id", "in"/.test(block))
+    return "back to not.in over the whole table — that is the sequential scan that timed out";
+  if (!/\.in\("universe_id", chunk\)/.test(block))
+    return "the statements are not restricted to a chunk of ids";
+  // The date-bounded question must ride both index columns, not scan and then filter.
+  return /\.gt\("trade_date", PLACEHOLDER_FIX_DATE\)/.test(block) ? null
+    : "the since-the-fix check is not bounded by date";
+});
+
+await check("the chunk is small enough to be a URL and large enough to be few", () => {
+  if (PLACEHOLDER_CHUNK < 50) return `${PLACEHOLDER_CHUNK} ids per statement is too many statements`;
+  return PLACEHOLDER_CHUNK <= 500 ? null
+    : `${PLACEHOLDER_CHUNK} ids is a long URL and a long statement`;
 });
 
 await check("an unmeasured placeholder count is not read as zero", () => {
@@ -1057,13 +1158,76 @@ await check("egress over the allowance is an error", () => {
   return e && e.level === "error" ? null : "exceeding the allowance was not an error";
 });
 
-await check("the worst recent run sets the projection, not the average", () => {
-  // A quiet Saturday must not average away a weekday that blows the budget.
-  const f = evalWith({ jobs: [
-    { status: "success", egress: { bytes: 5 * 1048576, requests: 10 } },
-    { status: "success", egress: { bytes: 300 * 1048576, requests: 9000 } },
-  ] });
-  return f.some((x) => x.code === "egress-over") ? null : "the big run was averaged away";
+// THE PROJECTION IS THE MEAN, which replaced "the worst run" on 2026-10-28 (§11r).
+// The month's total is runs x average run, so the average decides whether it fits;
+// the worst answers "what if every night were the worst night" and overstates whenever
+// there is variance. The original concern — a quiet run averaging away a ruinous one —
+// does not apply here, because a metered row is written by the capacity check at the
+// END of a run, so every sample is a completed night.
+const egressRuns = (...mbs) => ({
+  jobs: mbs.map((mb, i) => ({
+    status: "success", finished_at: `2026-10-2${i}T19:00:00Z`,
+    egress: { bytes: mb * 1048576, requests: 3400 },
+  })),
+});
+
+// The real 2026-10-20 shape: five ordinary nights and one at twice the usual, which
+// pinned the watchdog red for eight days on an allowance sitting at 59%.
+await check("one night at twice the usual is not an allowance being exceeded", () => {
+  const f = evalWith(egressRuns(137, 137, 137, 262, 137, 137));
+  if (f.some((x) => x.code === "egress-over"))
+    return "a single spike still reads as the allowance being blown";
+  const spike = f.find((x) => x.code === "egress-spike");
+  if (!spike || spike.level !== "warning") return `spike reported at level ${spike?.level}`;
+  if (!/262 MB/.test(spike.message)) return `the spike is not named: ${spike.message}`;
+  return /average run of 15[0-9] MB/.test(spike.message) ? null
+    : `the typical run is not stated: ${spike.message}`;
+});
+
+await check("the spike says which night it was", () => {
+  const f = evalWith(egressRuns(137, 137, 262, 137));
+  const spike = f.find((x) => x.code === "egress-spike");
+  return /2026-10-2\d/.test(spike?.message ?? "") ? null : `undated: ${spike?.message}`;
+});
+
+// And the property the old rule existed to protect, which must survive the change.
+await check("a month that genuinely does not fit is still an error", () => {
+  const f = evalWith(egressRuns(300, 290, 310, 300));
+  const e = f.find((x) => x.code === "egress-over");
+  if (!e || e.level !== "error") return "a sustained overage was not an error";
+  // and it must not ALSO cry spike, which would be two findings for one fact
+  return f.some((x) => x.code === "egress-spike")
+    ? "reported as both an overage and a spike" : null;
+});
+
+// Alternating 300/137 averages 218.5 MB, which is 4.80 GB over 22 runs — 94%, under
+// the allowance. This check asserted an error when it was first written and the code
+// was right: the month genuinely fits. It is kept, pointing the other way, because
+// "half the nights are over" is exactly the intuition the mean exists to correct.
+await check("half the nights over is still only as bad as the average says", () => {
+  const f = evalWith(egressRuns(300, 137, 300, 137, 300, 137));
+  if (f.some((x) => x.code === "egress-over"))
+    return "94% of the allowance was reported as exceeding it";
+  const w = f.find((x) => x.code === "egress");
+  return w && /9[0-9]% of the free-tier/.test(w.message) ? null
+    : `not warned at the right level: ${JSON.stringify(f.map((x) => x.code))}`;
+});
+
+// Push the same mix past the line and it does become an error.
+await check("and tips into an error once the average really is over", () => {
+  const f = evalWith(egressRuns(400, 240, 400, 240, 400, 240));   // mean 320 MB = 137%
+  const e = f.find((x) => x.code === "egress-over");
+  return e && e.level === "error" ? null
+    : `a 137% month was not an error: ${JSON.stringify(f.map((x) => x.code))}`;
+});
+
+await check("the egress limit is not the database limit", () => {
+  // evaluateHealth's `limitMb` option is the 500 MB DATABASE ceiling. Feeding it to an
+  // egress calculation reads an ordinary 137 MB night as ~590% of allowance.
+  const f = evaluateHealth({ ...healthy, ...egressRuns(137, 137, 137) },
+                           { now: NOW, limitMb: 500 });
+  return f.some((x) => x.code.startsWith("egress"))
+    ? "a 137 MB night was measured against the database ceiling" : null;
 });
 
 await check("egress projects over trading days, not calendar days", () => {

@@ -49,7 +49,7 @@ what each defect had in common. As of the first green end-to-end run:
 | Database | ~208 MB of Supabase's 500 MB — ~42%, growing ~114 MB/year (2026-09-28) |
 | Retention | 1,100 days, pruned nightly, so the table is flat rather than growing |
 | Alerting | Built, verified, and **reaching nobody** — the two secrets have never been set, which is why §11l took a week to notice |
-| Checks | 119 pipeline self-checks, 65 browser checks, all negative-tested |
+| Checks | 136 pipeline self-checks, 65 browser checks, all negative-tested |
 
 The prototype this section used to describe — a single client-side artifact with
 user-uploaded CSVs and no automation — is still in the repository as `meridian.jsx`,
@@ -3801,6 +3801,112 @@ counts it as a failure, and the tolerated-shortfall streak clears on the next ru
 Chosen over `update universe set status = ...` because it needs no production write, is
 reversible in a commit, and is self-consistent: a future `resolve_tickers.mjs` run tries
 all four candidates, gets four 404s, and leaves it out again.
+
+---
+
+## 11r. Three fixes: the mirror, the gauge, and the query that timed out
+*(2026-10-28)*
+
+The three open items from §11q, built.
+
+### 1. The mirror now diffs on key and date, not on a date watermark
+
+§11h mirrors "bars newer than the git copy", per class, by date. That can only ask *is
+this newer than the furthest I have got* — and the answer is useless when a bar arrives
+late for a date already passed. Yahoo publishes the NSE close hours or days after the
+run that first mirrored that date; the database picks it up on a later sweep; the
+watermark has moved on and the bar is unreachable forever. Measured: **~27,305 equity
+bars missing across three weeks, with the daily intake down to single digits.**
+
+Every run now also re-examines a **trailing window** and emits whatever the mirror does
+not already hold in it. `heldKeys` builds the set of `Key|Date` the committed files
+already carry from a cutoff onward, and the read skips anything in it.
+
+Two questions, one read: the window start and the class watermark, whichever is
+**earlier**. A class far behind is still caught up in full — that is what the watermark
+was protecting and it keeps doing it — while the window catches the late arrivals the
+watermark cannot see. The overlap costs bytes, not duplicate rows.
+
+Ten days by default: a week plus a long weekend of lateness, ~22,000 rows and ~3.5 MB
+against a ~137 MB night. `MIRROR_WINDOW_DAYS` widens it, which is how the backfill runs
+— a new `backfill-mirror` task in the maintenance workflow sets the window wide enough
+to reach the oldest missing day and lets the ordinary nightly path do the work. Nothing
+one-off happens, which is the point: a script written for a single occasion is a script
+nobody has ever run twice.
+
+The scanners moved to `meridian-history.js` to be testable, which is the same move
+`barsOf` made in §11l. They read the files as **text**, never as parsed rows — the
+equity base files hold 2.1 million bars and `readCSV` would build an object for each —
+and check the date before extracting the key, so bars outside the window cost one
+comparison and no allocation.
+
+**Corrections are deliberately not filtered by `held`.** A deep re-pull exists to
+overwrite what the mirror already has; suppressing it because it is already there would
+invert its purpose. Asserted by a check that reads the corrections pass and fails if
+`held` appears in it.
+
+### 2. The egress gauge projects from the mean, not the worst run
+
+The watchdog spent eight days red on `egress 112%` while the allowance sat at 59%. One
+night — 2026-10-20 — had the workbook re-read the 800-day window instead of taking
+compute's cache (**124.7 MB against its usual 0.0 MB**, 261.7 MB for the run), and the
+rule took the worst run in its window with no decay.
+
+**The month's total is the number of runs times the average run, so the average is what
+decides whether the month fits.** The worst run answers "what if every night were the
+worst night", which is a different question, and answering it instead overstates
+whenever there is any variance at all.
+
+The original rule chose the worst deliberately, so a quiet run could not average away a
+ruinous one. **That concern turns out not to apply here**, and the reason is worth
+writing down: a metered row is written by the capacity check at the *end* of a run, so a
+run that died early never writes one and every sample is a completed night. There is no
+quiet Saturday in this data.
+
+A spike is now its own finding at warning level — named, dated, with the average beside
+it — and says in as many words that it is a spike to explain rather than an allowance
+being exceeded. A sustained overage is still an error, and does not also cry spike.
+
+**A bug caught while writing it, which is why the test exists.** `evaluateHealth`'s
+`limitMb` option is the **500 MB database ceiling**. The first draft passed it into the
+egress calculation, where it would have read an ordinary 137 MB night as ~590% of
+allowance. The two limits differ by a factor of ten and share a shape; there is now a
+check that measures a 137 MB night with `limitMb: 500` set and fails if any egress
+finding appears.
+
+**And a test that was wrong rather than the code.** "An overage half the nights is an
+error" asserted an error for an alternating 300/137 pattern. That averages 218.5 MB —
+4.80 GB over 22 runs, **94%**, which genuinely fits. The check is kept, pointing the
+other way, because "half the nights are over" is exactly the intuition the mean exists
+to correct.
+
+### 3. The placeholder count, asked in a shape the database can answer
+
+`canceling statement due to statement timeout`, after working twice. The reason is in
+the schema: **the only index on `prices_daily` is the unique btree on
+`(universe_id, trade_date)`, and nothing indexes `volume`.** Any question phrased as
+"all rows where volume is null" is a sequential scan of 1.4 million rows, and `not.in`
+over ~100 non-equity ids makes the planner evaluate that list per row on top of it.
+
+Phrased as `universe_id IN (a chunk of equity ids)` it is an index range scan instead,
+and chunking at 250 ids gives each statement its own timeout budget rather than one
+statement needing all of it — about nine statements, lost in a 3,400-request night.
+Exact, not estimated, because the number feeds a delete-or-wait decision.
+
+The alarm half is now bounded by date as well: `trade_date > PLACEHOLDER_FIX_DATE` rides
+**both** columns of the index. It also replaces the global "newest placeholder" with the
+question that actually matters — *has anything been written as a placeholder since the
+drop shipped* — which is cheap to ask and is the only part that can raise an error.
+
+This is the third shape of this query. The first used an embedded join and failed with
+an empty message (§11o); the second was readable but unindexable; this one is on the
+index. Each failure taught something the previous one could not: that a HEAD response
+carries no body, and that a filter the schema cannot serve will work right up until the
+table is big enough that it does not.
+
+Self-checks 119 → 136. Negative-tested: reverting the mirror to a date watermark, the
+window scanner to ignoring its bound, the gauge to the worst run, and the count to
+`not.in` each fail the checks written for them.
 
 ---
 

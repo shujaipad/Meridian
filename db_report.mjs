@@ -177,11 +177,12 @@ console.log("\n  integrity");
 if (!facts.placeholders) {
   console.log("    placeholder bars: not measured (the count query did not run)");
 } else {
-  const { count, newest } = facts.placeholders;
+  const { count, sinceFix } = facts.placeholders;
   if (!count) console.log("    no stored equity bar is missing both volume and range");
   else console.log(`    ${count.toLocaleString()} equity bars have no volume and no range`
-                 + ` — holiday placeholders, newest ${newest ?? "unknown"}`
-                 + (newest && newest <= PLACEHOLDER_FIX_DATE ? ", all predating the fix" : ""));
+                 + ` — holiday placeholders, ${sinceFix
+                      ? `and one is dated ${sinceFix}, AFTER the ${PLACEHOLDER_FIX_DATE} fix`
+                      : `all predating the ${PLACEHOLDER_FIX_DATE} fix`}`);
 }
 
 // The same verdict the watchdog reaches, from the same facts and the same function.
