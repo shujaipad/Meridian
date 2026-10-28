@@ -43,13 +43,13 @@ what each defect had in common. As of the first green end-to-end run:
 
 | | |
 |---|---|
-| Nightly pipeline | Publishing every trading day. ASHIKA dropped 2026-10-28, so the streak clears (§11q). Open: the git mirror has stopped taking equities (~27k bars, §11q), the egress gauge is pinned red by one outlier night, and the placeholder count times out |
+| Nightly pipeline | **Green since 2026-10-28**, the first since 2026-10-06. Mirror, egress gauge and placeholder count all fixed and verified in production (§11r); ASHIKA dropped (§11q) |
 | Screens | All five asset classes, published same-day |
 | Workbook | Same day, same rows, same window as the screens (§11d) |
 | Database | ~208 MB of Supabase's 500 MB — ~42%, growing ~114 MB/year (2026-09-28) |
 | Retention | 1,100 days, pruned nightly, so the table is flat rather than growing |
 | Alerting | Built, verified, and **reaching nobody** — the two secrets have never been set, which is why §11l took a week to notice |
-| Checks | 136 pipeline self-checks, 65 browser checks, all negative-tested |
+| Checks | 137 pipeline self-checks, 65 browser checks, all negative-tested |
 
 The prototype this section used to describe — a single client-side artifact with
 user-uploaded CSVs and no automation — is still in the repository as `meridian.jsx`,
@@ -3904,9 +3904,31 @@ index. Each failure taught something the previous one could not: that a HEAD res
 carries no body, and that a filter the schema cannot serve will work right up until the
 table is big enough that it does not.
 
-Self-checks 119 → 136. Negative-tested: reverting the mirror to a date watermark, the
-window scanner to ignoring its bound, the gauge to the worst run, and the count to
-`not.in` each fail the checks written for them.
+### Verified in production the same night
+
+The 2026-10-28 nightly was **the first green run since 2026-10-06**, and it exercised
+all four changes at once:
+
+- **The mirror took bars the watermark could not see.** 2026-10-27 went from **6 equity
+  bars to 2,071** — 2,065 of them late for a date already mirrored. 2026-10-28 now sits
+  at 6, and will fill the same way tomorrow: a one-day lag instead of a permanent loss.
+- **ASHIKA is gone from the failure path.** No `failed=` tag, no streak, no job-failed
+  finding — the health block carried the egress spike and nothing else.
+- **The placeholder count answered**: 7,253, all predating the fix, no timeout.
+- **The gauge read the spike as a spike**: `the month still fits at 68%`, warning level,
+  and the watchdog went green after eight days red.
+
+**And the run exposed one more place where the report disagreed with itself.** The
+printed summary still ended `worst run 262 MB x 22 runs — 112%` two rows above a finding
+that said the month fits at 68%. Only the finding had been changed. That is §11p's
+defect in a new location — a report stating two different things about one fact — and
+the summary now projects from the same `egressProfile` the finding uses, naming the
+worst run separately when it exceeds the average by a quarter. Pinned by a check that
+reads `db_report.mjs` and fails if the two ever diverge again.
+
+Self-checks 119 → 137. Negative-tested: reverting the mirror to a date watermark, the
+window scanner to ignoring its bound, the gauge to the worst run, the count to
+`not.in`, and the summary to `Math.max` each fail the checks written for them.
 
 ---
 

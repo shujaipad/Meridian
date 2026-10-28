@@ -1221,6 +1221,18 @@ await check("and tips into an error once the average really is over", () => {
     : `a 137% month was not an error: ${JSON.stringify(f.map((x) => x.code))}`;
 });
 
+// The printed summary and the finding must project from the same number. On the night
+// the finding first said "the month fits at 68%", the summary two rows above it still
+// read 112% (§11r).
+await check("the report's egress summary agrees with its own finding", () => {
+  const src = readFileSync(new URL("./db_report.mjs", import.meta.url), "utf8");
+  const block = src.slice(src.indexOf("egress, recent runs"), src.indexOf("\n  integrity"));
+  if (/Math\.max\(\.\.\.metered/.test(block))
+    return "the summary still projects from the worst run while the finding uses the mean";
+  return /egressProfile\(facts\.jobs\)/.test(block) ? null
+    : "the summary does not share egressProfile with the finding";
+});
+
 await check("the egress limit is not the database limit", () => {
   // evaluateHealth's `limitMb` option is the 500 MB DATABASE ceiling. Feeding it to an
   // egress calculation reads an ordinary 137 MB night as ~590% of allowance.

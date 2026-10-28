@@ -16,7 +16,8 @@
  * (supabase-migration-005-capacity.sql). Without it you still get the thing that
  * actually predicts trouble: how many rows there are and how fast they arrive.
  */
-import { collectHealth, EGRESS_LIMIT_MB, egressPerMonthMb, evaluateHealth, mbPerYear,
+import { collectHealth, EGRESS_LIMIT_MB, egressPerMonthMb, egressProfile, evaluateHealth,
+         mbPerYear,
          PLACEHOLDER_FIX_DATE,
          RUNS_PER_MONTH, usedMbOf } from "./meridian-health.js";
 import { dirname } from "node:path";
@@ -162,12 +163,22 @@ if (!metered.length) {
               + ` ${(j.egress.bytes / 1048576).toFixed(0).padStart(5)} MB`
               + ` in ${j.egress.requests.toLocaleString()} requests`);
   }
-  const worst = Math.max(...metered.map((j) => j.egress.bytes));
-  const perMonth = egressPerMonthMb(worst);
-  console.log(`    worst run ${(worst / 1048576).toFixed(0)} MB`
+  // THE AVERAGE RUN, which is what the finding below projects from and therefore what
+  // this line has to say too. It printed the worst run until 2026-10-28, and on the
+  // night the finding first read "the month fits at 68%" this line two rows above it
+  // still read 112% — the report contradicting itself in the same breath, which is
+  // the §11p defect in a new place. The worst is still shown, named as the worst.
+  const eg = egressProfile(facts.jobs);
+  const perMonth = egressPerMonthMb(eg.mean);
+  console.log(`    average run ${(eg.mean / 1048576).toFixed(0)} MB`
             + ` x ${RUNS_PER_MONTH} runs = ~${(perMonth / 1024).toFixed(2)} GB/month`
             + ` of ${(EGRESS_LIMIT_MB / 1024).toFixed(0)} GB`
-            + ` — ${((perMonth / EGRESS_LIMIT_MB) * 100).toFixed(0)}%`);
+            + ` — ${eg.expectedPct.toFixed(0)}%`);
+  if (eg.worst.bytes > eg.mean * 1.25) {
+    console.log(`    worst run ${(eg.worst.bytes / 1048576).toFixed(0)} MB`
+              + ` on ${eg.worst.when || "an unrecorded date"}`
+              + ` — ${eg.worstPct.toFixed(0)}% if every night looked like it`);
+  }
 }
 
 // Stored holiday placeholder bars (§11m). Printed every night whether or not it is a
