@@ -3961,6 +3961,52 @@ window scanner to ignoring its bound, the gauge to the worst run, the count to
 
 ---
 
+## 11s. Bumping the actions, and why "bump to v5" was half a fix
+*(2026-10-29)*
+
+Every run had been warning that `actions/checkout@v4` and `actions/setup-node@v4`
+target Node 20 and are being force-run on Node 24. §11q named the remedy as a bump to
+`@v5`. **Checked before applying, and `@v5` would have fixed half of it.**
+
+What each major actually declares in its `action.yml`, read from the tags rather than
+assumed:
+
+| action | was | v5 | v6 | taken |
+|---|---|---|---|---|
+| `checkout` | v4 — node20 | **node24** | node24 | **v5** |
+| `setup-node` | v4 — node20 | **node24** | node24 | **v5** |
+| `setup-python` | **v5 — node20** | *is the problem* | **node24** | **v6** |
+| `upload-artifact` | v4 — node20 | **still node20** | **node24** | **v6** |
+
+Two traps in one table. `setup-python` was **already on v5** and v5 is the Node 20
+build — bumping "to v5" would have changed nothing while looking like a fix. And
+`upload-artifact@v5` is *also* Node 20, so that bump would have moved a version and
+removed no deprecation at all. Both needed v6.
+
+**Minimum version that reaches Node 24, not the newest.** v7 exists for all four. A
+major is where these actions put their breaking changes, `checkout` runs first in every
+one of the seven workflows, and a break there takes the nightly with it. The smallest
+jump that removes the warning is the one with the least surface for that.
+
+Our usage is the long-stable part of each API and nothing in it is version-sensitive:
+`checkout` with no inputs (plus `fetch-depth: 0` in the nightly), `setup-node` with
+`node-version`, `setup-python` with `python-version` and `cache: pip`,
+`upload-artifact` with `name` and `path`.
+
+**Verification came free from the path filters.** `workbook.yml` and `port-parity.yml`
+both list their own file among the paths that trigger them, so a workflow-only push runs
+them — and between them they exercise all four actions. `data integrity` runs on any
+push to main and `rls` on its own file. The three that are left (`nightly`, `watchdog`,
+`maintenance`) use only `checkout` and `setup-node`, both proven by the others.
+
+**One thing this cannot prove.** The `upload-artifact` steps are guarded by
+`if: failure()` — they exist to keep a broken workbook for inspection — so a green run
+never reaches them. `upload-artifact@v6` is therefore the one bump taken on the strength
+of its declared runtime and the stability of `name`/`path` alone. It is also the one
+whose failure costs least: it runs only when something has already gone wrong.
+
+---
+
 ## 12. Source of Truth for Code
 
 `meridian.jsx` in this repository is the current, authoritative application source —
