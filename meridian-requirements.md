@@ -3712,9 +3712,38 @@ Self-checks 116 → 119.
 
 Eleven days on. The product is fine: screens and workbook published every trading day,
 all five classes current, database 210.8 MB of 500 (42.2%) tracking to a ~2029 ceiling.
-The 2026-10-19 Ubuntu 26 runner migration — flagged as the one item with a deadline —
-**passed without incident**: seven nightly runs since have built and verified the
-workbook. Pinning the runner is now a precaution rather than a deadline.
+The 2026-10-19 `ubuntu-latest` migration passed with no observable effect: nine nightly
+runs since have built and verified the workbook.
+
+> **Corrected 2026-10-29.** This entry originally called that migration "the one item
+> with a deadline", and the health check of 2026-10-17 ranked pinning the runner as the
+> most urgent action open. **The stated reason was false.** It was that
+> `verify_workbook.py` depends on LibreOffice and a new image would change its version
+> underneath the workbook build.
+>
+> There is no LibreOffice in this project's CI — not in any workflow, not in
+> `verify_workbook.py`. §2.2.2 had already established why, and `requirements.txt` says
+> it in the dependency list: `formulas>=1.3 — evaluates the workbook in pure Python,
+> standing in for LibreOffice`. The project solved this at the start and wrote it down;
+> the claim came from generic spreadsheet guidance applied without reading the
+> repository, and was presented as a dated risk to act on.
+>
+> **What the image can actually affect is small**, because the toolchain is pinned by
+> the actions rather than inherited from the OS — `node-version: "22"` in six workflows
+> and `python-version: "3.11"` in three. What is left is what nothing pins: the
+> preinstalled git, the certificate store, system libraries if a dependency ever needs
+> compiling. Real, but not a deadline.
+>
+> **Also unverified, and said as though it were not.** "Passed without incident" is
+> evidence about outcomes, not about the image: the version appears only in each run's
+> `Set up job` header, which is not reachable through the API used here. The migration
+> may have happened harmlessly or may not yet have reached this repository.
+>
+> Runner pinning is therefore withdrawn as an action rather than deferred. The one real
+> item in that area is unrelated to Ubuntu: every run warns that `actions/checkout@v4`
+> and `actions/setup-node@v4` target Node 20 and are being force-run on Node 24, which
+> is the actions' own runtime and wants a bump to `@v5` eventually. No deadline is
+> claimed for it.
 
 Three things are not fine, and only one of them is what the alarm says it is.
 
